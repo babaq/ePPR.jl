@@ -1,4 +1,7 @@
 julia 0.6
 
+GLM
 GLMNet
-Lasso
+Dierckx
+Optim
+Images

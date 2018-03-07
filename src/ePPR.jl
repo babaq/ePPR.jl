@@ -37,7 +37,7 @@ mutable struct ePPRModel
     "vector of ``\phi_{m,d}(\alpha_{m,d}^TX_{-d})`` for each term"
     phivalues::Vector{Vector{Float64}}
     "γ"
-    residual::Vector{Float64}
+    residuals::Vector{Float64}
 end
 ePPRModel() = ePPRModel(0)
 ePPRModel(ymean) = ePPRModel(ymean,[],[],[],[],[],[])
@@ -78,7 +78,7 @@ mutable struct ePPRHyperParams
     """memory size to pool for nonlinear time interaction, ndelay=1 for linear time interaction.
     only first delay terms in `nft` is used for nonlinear time interaction."""
     ndelay::Int
-    "number of forward terms for each delay. [3, 2, 1] means 3 spatial terms for delay0, 2 for delay1, 1 for delay2"
+    "number of forward terms for each delay. [3, 2, 1] means 3 spatial terms for delay 0, 2 for delay 1, 1 for delay 2"
     nft::Vector{Int}
     "penalization parameter λ"
     lambda::Float64
@@ -190,6 +190,7 @@ function cvpartitionindex(n::Int,cv::ePPRCrossValidation,debug::ePPRDebugOptions
 end
 
 function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
+    debug.level>DebugNone && println("ePPR Cross Validation ...")
     train = hp.cv.trains[hp.cv.trainindex][1];traintest = hp.cv.trains[hp.cv.trainindex][2]
     # response and model predication
     traintestpredications = map(m->map(i->m(x[i,:]),traintest),models)
@@ -257,7 +258,7 @@ function eppr(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=eP
 end
 function eppr(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     model = forwardstepwise(model,x,y,hp,debug)
-    model,model.residual = refitmodelbetas(model,y,debug)
+    model,model.residuals = refitmodelbetas(model,y,debug)
     return model
 end
 
@@ -288,7 +289,7 @@ function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,de
             push!(model,β,Φ,α,[j,i],Φvs)
         end
     end
-    model.residual=r
+    model.residuals=r
     return model
 end
 
@@ -320,7 +321,7 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
             push!(model,β,Φ,α,[j,i],Φvs)
         end
     end
-    model.residual=r
+    model.residuals=r
     return model
 end
 
@@ -346,7 +347,7 @@ function refitmodel(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,deb
             r -= β*Φvs
         end
     end
-    model.residual=r
+    model.residuals=r
     return model
 end
 

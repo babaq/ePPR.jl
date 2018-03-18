@@ -36,39 +36,51 @@ mutable struct ePPRModel
     index::Vector{Vector{Int}}
     "vector of ``\phi_{m,d}(\alpha_{m,d}^TX_{-d})`` for each term"
     phivalues::Vector{Vector{Float64}}
+    "vector of trustregionsize for each term"
+    trustregionsize::Vector{Float64}
     "γ"
     residuals::Vector{Float64}
 end
-ePPRModel() = ePPRModel(0)
-ePPRModel(ymean) = ePPRModel(ymean,[],[],[],[],[],[])
+ePPRModel(ymean) = ePPRModel(ymean,[],[],[],[],[],[],[])
 length(m::ePPRModel)=length(m.beta)
 predict(m::ePPRModel)=m.ymean+squeeze(sum(cat(2,(m.beta.*m.phivalues)...),2),2)
-predict(m::ePPRModel,x::Matrix)=m.ymean+squeeze(sum(cat(2,(m.beta.*map((Φ,xα)->Φ(xα),m.phi,[x].*m.alpha))...),2),2)
+function predict(m::ePPRModel,x::Matrix,xpast::Union{Matrix,Void})
+    p = m.ymean
+    for t in 1:length(m)
+        j = m.index[t][1]
+        tx = j>0?[xpast[end-(j-1):end,:];x[1:end-j,:]]:x
+        p += m.beta[t]*m.phi[t](tx*m.alpha[t])
+    end
+    p
+end
 (m::ePPRModel)() = predict(m)
-(m::ePPRModel)(x::Matrix) = predict(m,x)
+(m::ePPRModel)(x::Matrix,xpast::Union{Matrix,Void}) = predict(m,x,xpast)
 function deleteat!(model::ePPRModel,i::Integer)
     deleteat!(model.beta,i)
     deleteat!(model.phi,i)
     deleteat!(model.alpha,i)
     deleteat!(model.index,i)
     deleteat!(model.phivalues,i)
+    deleteat!(model.trustregionsize,i)
 end
-function push!(model::ePPRModel,β::Float64,Φ,α::Vector{Float64},index::Vector{Int},Φvs::Vector{Float64})
+function push!(model::ePPRModel,β::Float64,Φ,α::Vector{Float64},index::Vector{Int},Φvs::Vector{Float64},trustregionsize::Float64)
     push!(model.beta,β)
     push!(model.phi,Φ)
     push!(model.alpha,α)
     push!(model.index,index)
     push!(model.phivalues,Φvs)
+    push!(model.trustregionsize,trustregionsize)
 end
 function getterm(model::ePPRModel,i::Integer)
-    return model.beta[i],model.phi[i],model.alpha[i],model.index[i],model.phivalues[i]
+    return model.beta[i],model.phi[i],model.alpha[i],model.index[i],model.phivalues[i],model.trustregionsize[i]
 end
-function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},index::Vector{Int},Φvs::Vector{Float64})
+function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},index::Vector{Int},Φvs::Vector{Float64},trustregionsize::Float64)
     model.beta[i]=β
     model.phi[i]=Φ
     model.alpha[i]=α
     model.index[i]=index
     model.phivalues[i]=Φvs
+    model.trustregionsize[i]=trustregionsize
 end
 
 """
@@ -138,8 +150,9 @@ mutable struct ePPRCrossValidation
 end
 ePPRCrossValidation() = ePPRCrossValidation(0.9,5,8,8,1,0.08,[],[])
 
-function delaywindowpool(x::Matrix,ndelay::Int,blankcolor=0.5)
+function delaywindowpool(x::Matrix,ndelay::Int,blankcolor=0.5,debug::ePPRDebugOptions=ePPRDebugOptions())
     if ndelay>1
+        debug.level>DebugNone && println("Nonlinear Time Interaction, pool x[i-$(ndelay-1):i] together ...")
         xcol=size(x,2);dwx=x
         for j in 1:ndelay-1
             dwx = [dwx [fill(blankcolor,j,xcol);x[1:end-j,:]]]
@@ -148,7 +161,7 @@ function delaywindowpool(x::Matrix,ndelay::Int,blankcolor=0.5)
     end
     return x
 end
-delaywindowpool(x::Matrix,hp::ePPRHyperParams)=delaywindowpool(x,hp.ndelay,hp.blankimage[1])
+delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())=delaywindowpool(x,hp.ndelay,hp.blankimage[1],debug)
 
 function delaywindowpooloperator(spatialoperator::Matrix,ndelay::Int)
     if ndelay>1
@@ -163,6 +176,14 @@ function delaywindowpooloperator(spatialoperator::Matrix,ndelay::Int)
 end
 
 delaywindowpoolblankimage(nrow::Int,ncol::Int,ndelay::Int=1,blankcolor=0.5)=fill(blankcolor,1,nrow*ncol*ndelay)
+
+function getxpast(maxmemory,xi,x,blankimage)
+    if maxmemory == 0
+        return nothing
+    end
+    pi = (xi[1]-maxmemory):(xi[1]-1)
+    cat(1,map(i->i<=0?blankimage:x[i:i,:],pi)...)
+end
 
 """
 Data partition for cross validation
@@ -184,7 +205,7 @@ function cvpartitionindex(n::Int,cv::ePPRCrossValidation,debug::ePPRDebugOptions
     end
     ntestfold = Int(floor((n-ntrain)/cv.testfold))
     tests = Any[ntrain + (1:ntestfold)+tf*ntestfold for tf in 0:cv.testfold-1]
-    debug.level>DebugNone && println("Cross Validation Data Partition, n = $n, ntrain = $ntrain in $(cv.trainfold)-fold, ntrainfold = $ntrainfold in $(cv.traintestfold)-fold, ntest = $(ntestfold*cv.testfold) in $(cv.testfold)-fold")
+    debug.level>DebugNone && println("Cross Validation Data Partition: n = $n, ntrain = $ntrain in $(cv.trainfold)-fold, ntrainfold = $ntrainfold in $(cv.traintestfold)-fold, ntest = $(ntestfold*cv.testfold) in $(cv.testfold)-fold")
     cv.trains=trains;cv.tests=tests
     return cv
 end
@@ -193,7 +214,8 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     debug.level>DebugNone && println("ePPR Cross Validation ...")
     train = hp.cv.trains[hp.cv.trainindex][1];traintest = hp.cv.trains[hp.cv.trainindex][2]
     # response and model predication
-    traintestpredications = map(m->map(i->m(x[i,:]),traintest),models)
+    maxmemory = length(hp.nft)-1
+    traintestpredications = map(m->map(i->m(x[i,:],getxpast(maxmemory,i,x,hp.blankimage)),traintest),models)
     traintestys = map(i->y[i],traintest)
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
@@ -202,11 +224,11 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     mi=0;nmodel=length(models)
     for rm in 1:nmodel
         moretermp = [pvalue(SignedRankTest(traintestcors[rm],traintestcors[m]),tail=:left) for m in rm+1:nmodel]
-        if rm==1 && all(moretermp .> hp.cv.modelselectpvalue)
+        if rm==1 && (rm==nmodel || all(moretermp .> hp.cv.modelselectpvalue))
             mi=rm
             break
         end
-        if all(moretermp .> hp.cv.modelselectpvalue)
+        if rm==nmodel || all(moretermp .> hp.cv.modelselectpvalue)
             lesstermp = [pvalue(SignedRankTest(traintestcors[m],traintestcors[rm]),tail=:left) for m in 1:rm-1]
             if all(lesstermp .< hp.cv.modelselectpvalue)
                 mi=rm
@@ -215,29 +237,35 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
         end
     end
     if mi==0
-        warn("No model not worse than models with more terms, and better than models with less terms")
+        warn("No model not worse than models with more terms, and better than models with less terms.")
         return nothing
     end
     model = deepcopy(models[mi])
+    debug.level>DebugNone && println("$(mi)th model with $(length(model)) terms is chosen.")
 
     # find drop terms that do not improve model predication
     droptermp = [pvalue(SignedRankTest(traintestcors[m-1],traintestcors[m]),tail=:left) for m in 2:nmodel]
     notimprove = find(droptermp .> hp.cv.modelselectpvalue)
     # find models with change level predication
-    modelp = [pvalue(SignedRankTest(traintestcors[m]),tail=:both) for m in 1:nmodel]
+    modelp = [pvalue(SignedRankTest(traintestcors[m]),tail=:both) for m in 2:nmodel]
     notpredictive = find(modelp .> hp.cv.modelselectpvalue)
-    # spurious terms in the selected model
-    spuriousterm = findin(model.index,hp.droptermindex[union(notimprove,notpredictive)])
-    !isempty(spuriousterm) && deleteat!.(model,spuriousterm)
 
-    return eppr(model,x[train,:],y[train],hp,debug)
+    poorterm = hp.droptermindex[union(notimprove,notpredictive)]
+    # spurious terms in the selected model
+    spuriousterm = findin(model.index,poorterm)
+    if !isempty(spuriousterm)
+        debug.level>DebugNone && println("Model drop spurious term: $(model.index[spuriousterm]).")
+        deleteat!.(model,spuriousterm)
+    end
+
+    return length(model)==0?model:eppr(model,x[train,:],y[train],hp,debug)
 end
 
 function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     n = length(y);n !=size(x,1) && error("Length of x and y does not match!")
     cvpartitionindex(n,hp.cv,debug)
     train = hp.cv.trains[hp.cv.trainindex][1]
-    px = delaywindowpool(x,hp)
+    px = delaywindowpool(x,hp,debug)
     models = eppr(px[train,:],y[train],hp,debug)
     return cvmodel(models,px,y,hp,debug),models
 end
@@ -265,28 +293,28 @@ end
 function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     js = map(t->t[1],m.index);is = map(t->t[2],m.index)
     ujs = unique(js);jis=Dict(j=>is[js.==j] for j in ujs);njis=Dict(j=>length(jis[j]) for j in ujs)
-    debug.level>DebugNone && println("ePPR Forward Stepwise ...")
+    debug.level>DebugNone && println("ePPR Model Forward Stepwise ...")
     ym = mean(y);model = ePPRModel(ym);r=y-ym
     if hp.spatialtermfirst
         for j in ujs
             tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
             for i in 1:njis[j]
-                debug.level>DebugNone && println("Fit [Temporal-$j, Spatial-$i] New Term ...")
+                debug.level>DebugNone && println("Fit Model [Temporal-$j, Spatial-$i] New Term ...")
                 α = normalize(m.alpha[ m.index .== [[j,jis[j][i]]] ][1],2)
                 β,Φ,α,Φvs = fitnewterm(tx,r,α,hp.phidf,debug)
                 r -= β*Φvs
-                push!(model,β,Φ,α,[j,i],Φvs)
+                push!(model,β,Φ,α,[j,i],Φvs,0.0)
             end
         end
     else
         for i in 1:maximum(values(njis)),j in ujs
             i>njis[j] && continue
-            debug.level>DebugNone && println("Fit [Temporal-$j, Spatial-$i] New Term ...")
+            debug.level>DebugNone && println("Fit Model [Temporal-$j, Spatial-$i] New Term ...")
             tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
             α = normalize(m.alpha[ m.index .== [[j,jis[j][i]]] ][1],2)
             β,Φ,α,Φvs = fitnewterm(tx,r,α,hp.phidf,debug)
             r -= β*Φvs
-            push!(model,β,Φ,α,[j,i],Φvs)
+            push!(model,β,Φ,α,[j,i],Φvs,0.0)
         end
     end
     model.residuals=r
@@ -305,9 +333,9 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
             for i in 1:hp.nft[j+1]
                 debug.level>DebugNone && println("Fit [Temporal-$j, Spatial-$i] New Term ...")
                 α = getinitialalpha(tx,r,debug)
-                β,Φ,α,Φvs = fitnewterm(tx,r,α,hp,debug)
+                β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,α,hp,debug)
                 r -= β*Φvs
-                push!(model,β,Φ,α,[j,i],Φvs)
+                push!(model,β,Φ,α,[j,i],Φvs,trustregionsize)
             end
         end
     else
@@ -316,9 +344,9 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
             debug.level>DebugNone && println("Fit [Temporal-$j, Spatial-$i] New Term ...")
             tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
             α = getinitialalpha(tx,r,debug)
-            β,Φ,α,Φvs = fitnewterm(tx,r,α,hp,debug)
+            β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,α,hp,debug)
             r -= β*Φvs
-            push!(model,β,Φ,α,[j,i],Φvs)
+            push!(model,β,Φ,α,[j,i],Φvs,trustregionsize)
         end
     end
     model.residuals=r
@@ -330,18 +358,18 @@ function refitmodel(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,deb
     model,r = refitmodelbetas(model,y,debug)
     for t in 1:length(model)
         oldloss = lossfun(model,y,hp)
-        oldβ,oldΦ,oldα,index,oldΦvs = getterm(model,t)
+        oldβ,oldΦ,oldα,index,oldΦvs,oldtrustregionsize = getterm(model,t)
         r += oldβ*oldΦvs
 
         j = index[1];i=index[2]
         tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
         debug.level>DebugNone && println("Refit [Temporal-$j, Spatial-$i] New Term ...")
-        β,Φ,α,Φvs = fitnewterm(tx,r,oldα,hp,debug,forward=false)
-        setterm(model,t,β,Φ,α,index,Φvs)
+        β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,oldα,hp,debug,convergerate=hp.refitconvergerate,trustregionsize=oldtrustregionsize)
+        setterm(model,t,β,Φ,α,index,Φvs,trustregionsize)
         newloss = lossfun(model,y,hp)
         if newloss > oldloss
             debug.level>DebugNone && println("Model Loss increased from $oldloss to $newloss. Discard the new term, keep the old one.")
-            setterm(model,t,oldβ,oldΦ,oldα,index,oldΦvs)
+            setterm(model,t,oldβ,oldΦ,oldα,index,oldΦvs,oldtrustregionsize)
             r -= oldβ*oldΦvs
         else
             r -= β*Φvs
@@ -396,8 +424,8 @@ function lossfun(model::ePPRModel,y::Vector,hp::ePPRHyperParams)
 end
 
 (Φro::RObject)(xα) = rcopy(R"predict($Φro, x=$xα)$y")
-function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions();forward::Bool=true)
-    saturatediteration = 0;Φ=nothing;Φvs=nothing;xα=nothing;crt = forward?hp.forwardconvergerate:hp.refitconvergerate
+function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions();convergerate::Float64=hp.forwardconvergerate,trustregionsize::Float64=hp.trustregioninitsize)
+    saturatediteration = 0;Φ=nothing;Φvs=nothing;xα=nothing
     for i in 1:hp.newtermmaxiteration
         xα = x*α
         Φ = R"smooth.spline(y=$r, x=$xα, df=$(hp.phidf), spar=NULL, cv=FALSE)"
@@ -412,14 +440,14 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::eP
         f′ = gg*g
         f″ = gg*gg'
         # α and Loss f(α) after trust region
-        success,α,lossₙ = newtontrustregion(f,α,lossₒ,f′,f″,hp.trustregioninitsize,hp.trustregionmaxsize,hp.trustregioneta,hp.trustregionmaxiteration,debug)
+        success,α,lossₙ,trustregionsize = newtontrustregion(f,α,lossₒ,f′,f″,trustregionsize,hp.trustregionmaxsize,hp.trustregioneta,hp.trustregionmaxiteration,debug)
         if !success
             warn("NewtonTrustRegion failed, New Term use initial α.")
             break
         end
-        lossₙ > lossₒ && debug.level>DebugNone && println("New Term $(i)th iteration. Loss increased from $(lossₒ) to $(lossₙ).")
+        lossₙ > lossₒ && debug.level>DebugNone && warn("New Term $(i)th iteration. Loss increased from $(lossₒ) to $(lossₙ).")
         cr = (lossₒ-lossₙ)/lossₒ
-        if lossₙ < lossₒ && cr < crt
+        if lossₙ < lossₒ && cr < convergerate
             saturatediteration+=1
             if saturatediteration >= hp.nsaturatediteration
                 debug.level>DebugNone && println("New Term converged in $i iterations with (lossₒ-lossₙ)/lossₒ = $(cr).")
@@ -434,7 +462,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::eP
     Φvs /=β
     si = sortperm(xα)
     Φ = Spline1D(xα[si], Φ(xα[si]), k=3, bc="extrapolate", s=50)
-    return β,Φ,α,Φvs
+    return β,Φ,α,Φvs,trustregionsize
 end
 
 function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int,debug::ePPRDebugOptions=ePPRDebugOptions())
@@ -470,9 +498,11 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
         pˢ = -eh[:vectors]*(qᵀg./eh[:values])
         pˢₙ = norm(pˢ,2)
     end
-    λe = eh[:values]-eh[:values][1]
-    C1 = sum((qᵀg./λe)[2:end].^2)
-    C2 = qᵀg[1]^2
+    ehminvalue = minimum(eh[:values])
+    λe = eh[:values]-ehminvalue
+    ehminidx = λe .== 0
+    C1 = sum((qᵀg./λe)[.!ehminidx].^2)
+    C2 = sum(qᵀg[ehminidx].^2)
     C3 = sum(qᵀg.^2)
 
     for i in 1:maxiteration
@@ -509,11 +539,11 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
                 end
                 pᵢ = -eh[:vectors]*(qᵀg./(λe+λ))
             else
+                # hard-hard case
                 iseasy = false
                 ishard = true
-                # hard-hard case
                 w = qᵀg./λe
-                w[1]=0
+                w[ehminidx]=0
                 τ = sqrt(r^2-C1)
                 𝑧 = eh[:vectors][:,1]
                 pᵢ = -eh[:vectors]*w + τ*𝑧
@@ -522,12 +552,12 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
         # ρ: ratio of actual change versus predicted change
         xᵢ = x₀ + pᵢ
         fᵢ = f(xᵢ)
-        ρ = (fᵢ - f₀) / (pᵢ'*g₀ + pᵢ'*H₀*pᵢ/2)
+        ρ = (fᵢ - f₀) / (pᵢ'*(g₀ + H₀*pᵢ/2))
         # update trust region size
         if ρ < 0.25
             r /= 4
         elseif ρ > 0.75 && !islambdazero
-            r = min(2r,rmax)
+            r = min(2*r,rmax)
         end
         if debug.level>DebugBasic
             println("                                 ρ = $ρ")
@@ -544,11 +574,11 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
         end
         # accept solution only once
         if ρ > η
-            return true,xᵢ,fᵢ
+            return true,xᵢ,fᵢ,r
         end
     end
     debug.level>DebugBasic && warn("NewtonTrustRegion does not converge in $maxiteration iterations.")
-    return false,x₀,f₀
+    return false,x₀,f₀,r
 end
 
 function getinitialalpha(x::Matrix,r::Vector,debug::ePPRDebugOptions=ePPRDebugOptions())
@@ -563,7 +593,7 @@ function getinitialalpha(x::Matrix,r::Vector,debug::ePPRDebugOptions=ePPRDebugOp
 end
 
 function refitmodelbetas(model::ePPRModel,y::Vector,debug::ePPRDebugOptions=ePPRDebugOptions())
-    debug.level>DebugNone && println("Refit βs ...")
+    debug.level>DebugNone && println("Refit Model βs ...")
     x = cat(2,model.phivalues...)
     res = lm(x,y-model.ymean)
     β = coef(res)

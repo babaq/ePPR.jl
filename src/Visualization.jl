@@ -9,7 +9,7 @@ function plotalpha(model::ePPRModel,hp::ePPRHyperParams)
     p = plot(layout=grid(maxj,maxi),yflip=true,leg=false,framestyle=:none)
     for t in 1:length(model)
         j=js[t];i=is[t]
-        α = mapfoldl(d->reshape(model.alpha[t][(1:np)+d*np],hp.imagesize),(a0,a1)->[a0;a1],0:hp.ndelay-1)
+        α = mapfoldl(d->reshape(normalize(model.alpha[t],2)[(1:np)+d*np],hp.imagesize),(a0,a1)->[a0;a1],0:hp.ndelay-1)
         plot!(p[j,i],α,seriestype=:heatmap,color=:fire,ratio=:equal)
     end
     for j in 1:maxj

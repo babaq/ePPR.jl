@@ -83,6 +83,18 @@ function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},
     model.trustregionsize[i]=trustregionsize
 end
 
+mutable struct ePPRCrossValidation
+    trainpercent::Float64
+    trainfold::Int
+    testfold::Int
+    traintestfold::Int
+    trainindex::Int
+    modelselectpvalue::Float64
+    trains
+    tests
+end
+ePPRCrossValidation() = ePPRCrossValidation(0.9,5,8,8,1,0.08,[],[])
+
 """
 Hyper Parameters for ePPR
 """
@@ -125,57 +137,50 @@ mutable struct ePPRHyperParams
     "drop term index between backward models"
     droptermindex
     "ePPR Cross Validation"
-    cv
+    cv::ePPRCrossValidation
+    "Valid Image Region"
+    xindex::Vector{Int}
 end
-ePPRHyperParams()=ePPRHyperParams(1,[2,2],15,5,1,true,[],0.01,0.001,2,100,1,1000,0.2,1000,[],[],[],ePPRCrossValidation())
-function ePPRHyperParams(nrow::Int,ncol::Int;ndelay::Int=1,blankcolor=0.5)
+ePPRHyperParams()=ePPRHyperParams(1,[2,2],15,5,1,true,[],0.01,0.001,2,100,1,1000,0.2,1000,[],[],[],ePPRCrossValidation(),Int[])
+function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
     hp=ePPRHyperParams()
     hp.imagesize = (nrow,ncol)
+    hp.xindex=xindex
     hp.ndelay=ndelay
-    hp.blankimage = delaywindowpoolblankimage(nrow,ncol,ndelay,blankcolor)
-    hp.alphapenaltyoperator = delaywindowpooloperator(laplacian2dmatrix(nrow,ncol),ndelay)
+    hp.blankimage = delaywindowpoolblankimage(nrow,ncol,xindex,ndelay,blankcolor)
+    hp.alphapenaltyoperator = delaywindowpooloperator(laplacian2dmatrix(nrow,ncol),xindex,ndelay)
     return hp
 end
-ePPRHyperParams(nrowncol::Int;ndelay::Int=1,blankcolor=0.5)=ePPRHyperParams(nrowncol,nrowncol,ndelay=ndelay,blankcolor=blankcolor)
 
-mutable struct ePPRCrossValidation
-    trainpercent::Float64
-    trainfold::Int
-    testfold::Int
-    traintestfold::Int
-    trainindex::Int
-    modelselectpvalue::Float64
-    trains
-    tests
-end
-ePPRCrossValidation() = ePPRCrossValidation(0.9,5,8,8,1,0.08,[],[])
+function delaywindowpool(x::Matrix,xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5,debug::ePPRDebugOptions=ePPRDebugOptions())
+    vx = isempty(xindex)?x:x[:,xindex]
+    ndelay<=1 && return vx
 
-function delaywindowpool(x::Matrix,ndelay::Int,blankcolor=0.5,debug::ePPRDebugOptions=ePPRDebugOptions())
-    if ndelay>1
-        debug.level>DebugNone && println("Nonlinear Time Interaction, pool x[i-$(ndelay-1):i] together ...")
-        xcol=size(x,2);dwx=x
-        for j in 1:ndelay-1
-            dwx = [dwx [fill(blankcolor,j,xcol);x[1:end-j,:]]]
-        end
-        return dwx
+    debug.level>DebugNone && println("Nonlinear Time Interaction, pool x[i-$(ndelay-1):i] together ...")
+    nc=size(vx,2);dwvx=vx
+    for j in 1:ndelay-1
+        dwvx = [dwvx [fill(blankcolor,j,nc);vx[1:end-j,:]]]
     end
-    return x
+    return dwvx
 end
-delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())=delaywindowpool(x,hp.ndelay,hp.blankimage[1],debug)
+delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())=delaywindowpool(x,hp.xindex,hp.ndelay,hp.blankimage[1],debug)
 
-function delaywindowpooloperator(spatialoperator::Matrix,ndelay::Int)
-    if ndelay>1
-        nr,nc=size(spatialoperator)
-        dwo = zeros(ndelay*nr,ndelay*nc)
-        for j in 0:ndelay-1
-            dwo[(1:nr)+j*nr, (1:nc)+j*nc] = spatialoperator
-        end
-        return dwo
+function delaywindowpooloperator(spatialoperator::Matrix,xindex::Vector{Int}=Int[],ndelay::Int=1)
+    vso = isempty(xindex)?spatialoperator:spatialoperator[xindex,xindex]
+    ndelay<=1 && return vso
+
+    nr,nc=size(vso)
+    dwvo = zeros(ndelay*nr,ndelay*nc)
+    for j in 0:ndelay-1
+        dwvo[(1:nr)+j*nr, (1:nc)+j*nc] = vso
     end
-    return spatialoperator
+    return dwvo
 end
 
-delaywindowpoolblankimage(nrow::Int,ncol::Int,ndelay::Int=1,blankcolor=0.5)=fill(blankcolor,1,nrow*ncol*ndelay)
+function delaywindowpoolblankimage(nrow::Int,ncol::Int,xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
+    pn = isempty(xindex)?nrow*ncol:length(xindex)
+    fill(blankcolor,1,pn*ndelay)
+end
 
 function getxpast(maxmemory,xi,x,blankimage)
     if maxmemory == 0
@@ -461,7 +466,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::eP
     β = std(Φvs)
     Φvs /=β
     si = sortperm(xα)
-    Φ = Spline1D(xα[si], Φ(xα[si]), k=3, bc="extrapolate", s=50)
+    Φ = Spline1D(xα[si], Φ(xα[si]), k=3, bc="extrapolate", s=0.5)
     return β,Φ,α,Φvs,trustregionsize
 end
 
@@ -472,7 +477,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int,debug::ePPRDebugOp
     β = std(Φvs)
     Φvs /=β
     si = sortperm(xα)
-    Φ = Spline1D(xα[si], Φ(xα[si]), k=3, bc="extrapolate", s=50)
+    Φ = Spline1D(xα[si], Φ(xα[si]), k=3, bc="extrapolate", s=0.5)
     return β,Φ,α,Φvs
 end
 
@@ -605,6 +610,9 @@ function refitmodelbetas(model::ePPRModel,y::Vector,debug::ePPRDebugOptions=ePPR
     return model,residuals(res)
 end
 
+"""
+2D Laplacian Filtering in Matrix Form
+"""
 function laplacian2dmatrix(nrow::Int,ncol::Int)
     center = [-1 -1 -1;
               -1  8 -1;

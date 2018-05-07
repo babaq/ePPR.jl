@@ -5,11 +5,19 @@ plotlyjs()
 clibrary(:colorcet)
 
 function plotalpha(model::ePPRModel,hp::ePPRHyperParams)
-    js = map(t->t[1]+1,model.index);is = map(t->t[2],model.index);maxj=maximum(js);maxi=maximum(is);np=prod(hp.imagesize)
+    js = map(t->t[1]+1,model.index);is = map(t->t[2],model.index);maxj=maximum(js);maxi=maximum(is);npi=prod(hp.imagesize);npx=length(hp.xindex)
     p = plot(layout=grid(maxj,maxi),yflip=true,leg=false,framestyle=:none)
     for t in 1:length(model)
-        j=js[t];i=is[t]
-        α = mapfoldl(d->reshape(normalize(model.alpha[t],2)[(1:np)+d*np],hp.imagesize),(a0,a1)->[a0;a1],0:hp.ndelay-1)
+        j=js[t];i=is[t];tα=normalize(model.alpha[t],2)
+        α = mapfoldl(d->begin
+                            if isempty(hp.xindex)
+                                da = reshape(tα[(1:npi)+d*npi],hp.imagesize)
+                            else
+                                da = zeros(hp.imagesize)
+                                da[hp.xindex]=tα[(1:npx)+d*npx]
+                            end
+                            da
+                        end,(a0,a1)->[a0;a1],0:hp.ndelay-1)
         plot!(p[j,i],α,seriestype=:heatmap,color=:fire,ratio=:equal)
     end
     for j in 1:maxj

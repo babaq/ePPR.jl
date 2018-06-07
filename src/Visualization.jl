@@ -1,8 +1,8 @@
-export plotalpha,plotphi,plotcor
+export plotmodel,plotalpha,plotphi,plotcor
 
-using Plots
-plotlyjs()
-clibrary(:colorcet)
+function plotmodel(model::ePPRModel,hp::ePPRHyperParams)
+    plot(plotalpha(model,hp),plotphi(model),layout=grid(2,1),size=(650,850),link=:none)
+end
 
 function plotalpha(model::ePPRModel,hp::ePPRHyperParams)
     js = map(t->t[1]+1,model.index);is = map(t->t[2],model.index);maxj=maximum(js);maxi=maximum(is);npi=prod(hp.imagesize);npx=length(hp.xindex)
@@ -28,7 +28,7 @@ end
 function plotphi(model::ePPRModel,xrange=-200:200)
     minx,maxx=extrema(xrange);xtick=[minx,0,maxx]
     js = map(t->t[1]+1,model.index);is = map(t->t[2],model.index);maxj=maximum(js);maxi=maximum(is)
-    p = plot(layout=grid(maxj,maxi),leg=false,framestyle=:none)#,grid=false)
+    p = plot(layout=grid(maxj,maxi),leg=false,framestyle=:none,grid=false)
     for t in 1:length(model)
         j=js[t];i=is[t]
         plot!(p[j,i],x->model.phi[t](x),minx,maxx,seriestype=:line,linewidth=2,link=:all,framestyle=:axes,title="β=$(round(model.beta[t],3))")

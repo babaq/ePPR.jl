@@ -126,8 +126,9 @@ mutable struct ePPRCrossValidation
     modelselectpvalue::Float64
     trains
     tests
+    traintestcors
 end
-ePPRCrossValidation() = ePPRCrossValidation(0.9,5,8,8,1,0.08,[],[])
+ePPRCrossValidation() = ePPRCrossValidation(0.9,5,8,8,1,0.08,[],[],[])
 
 """
 Hyper Parameters for ePPR
@@ -258,6 +259,7 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     traintestys = map(i->y[i],traintest)
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
+    hp.cv.traintestcors = traintestcors
     debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Model_Goodness")
     # find the model no worse than models with more terms, and better than models with less terms
     mi=0;nmodel=length(models)

@@ -116,6 +116,7 @@ function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},
     model.phivalues[i]=Φvs
     model.trustregionsize[i]=trustregionsize
 end
+clean(model)=model
 function clean(model::ePPRModel)
     model.phivalues=[]
     model.trustregionsize=[]

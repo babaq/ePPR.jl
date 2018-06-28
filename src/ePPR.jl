@@ -4,7 +4,7 @@ module ePPR
 import Base.length,Base.push!,Base.deleteat!,StatsBase.predict
 export ePPRDebugOptions,DebugNone,DebugBasic,DebugFull,DebugVisual,
 delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionindex,getinitialalpha,refitmodelbetas,laplacian2dmatrix,
-ePPRModel,getterm,setterm,ePPRHyperParams,ePPRCrossValidation,
+ePPRModel,getterm,setterm,clean,ePPRHyperParams,ePPRCrossValidation,
 eppr,epprcv,cvmodel,forwardstepwise,refitmodel,backwardstepwise,dropterm,lossfun,fitnewterm,newtontrustregion
 
 using GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
@@ -115,6 +115,12 @@ function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},
     model.index[i]=index
     model.phivalues[i]=Φvs
     model.trustregionsize[i]=trustregionsize
+end
+function clean(model::ePPRModel)
+    model.phivalues=[]
+    model.trustregionsize=[]
+    model.residuals=[]
+    return model
 end
 
 mutable struct ePPRCrossValidation

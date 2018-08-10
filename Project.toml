@@ -1,0 +1,6 @@
+authors = ["Li Alex Zhang <fff008@gmail.com>"]
+name = "ePPR"
+uuid = "714c76c0-9ccf-11e8-0eb6-d37ea2f30fce"
+version = "0.1.0"
+
+[deps]

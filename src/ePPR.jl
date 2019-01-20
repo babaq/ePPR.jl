@@ -7,9 +7,10 @@ delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionind
 ePPRModel,getterm,setterm,clean,ePPRHyperParams,ePPRCrossValidation,
 eppr,epprcv,cvmodel,forwardstepwise,refitmodel,backwardstepwise,dropterm,lossfun,fitnewterm,newtontrustregion
 
-using GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
+using LinearAlgebra,Statistics,GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
 R"library('MASS')"
-plotlyjs()
+#plotlyjs()
+gr()
 clibrary(:colorcet)
 
 const DebugNone=0
@@ -27,7 +28,7 @@ function (debug::ePPRDebugOptions)(msg;level::Int=DebugBasic,log="ePPR.log",once
     if debug.level >= level
         if debug.logio==nothing
             if debug.logdir==nothing
-                io=STDOUT
+                io=stdout
             else
                 !isdir(debug.logdir) && mkpath(debug.logdir)
                 io = open(joinpath(debug.logdir,log),"a")
@@ -54,8 +55,8 @@ function (debug::ePPRDebugOptions)(msg::Plots.Plot;level::Int=DebugBasic,log="eP
 end
 
 """
-``\hat{y}_i=\bar{y}+\sum_{d=0}^D\sum_{m=1}^{M_d}\beta_{m,d}\phi_{m,d}(\alpha_{m,d}^Tx_{i-d})``
-with ``\frac{1}{n}\sum_{i=1}^n\phi_{m,d}(\alpha_{m,d}^Tx_{i-d})=0``, ``\frac{1}{n}\sum_{i=1}^n\phi_{m,d}^2(\alpha_{m,d}^Tx_{i-d})=1``
+``\\hat{y}_i=\\bar{y}+\\sum_{d=0}^D\\sum_{m=1}^{M_d}\\beta_{m,d}\\phi_{m,d}(\\alpha_{m,d}^Tx_{i-d})``
+with ``\\frac{1}{n}\\sum_{i=1}^n\\phi_{m,d}(\\alpha_{m,d}^Tx_{i-d})=0``, ``\\frac{1}{n}\\sum_{i=1}^n\\phi_{m,d}^2(\\alpha_{m,d}^Tx_{i-d})=1``
 """
 mutable struct ePPRModel
     "𝑦̄"
@@ -68,7 +69,7 @@ mutable struct ePPRModel
     alpha::Vector{Vector{Float64}}
     "vector of [temporal, spatial] index for each term"
     index::Vector{Vector{Int}}
-    "vector of ``\phi_{m,d}(\alpha_{m,d}^TX_{-d})`` for each term"
+    "vector of ``\\phi_{m,d}(\\alpha_{m,d}^TX_{-d})`` for each term"
     phivalues::Vector{Vector{Float64}}
     "vector of trustregionsize for each term"
     trustregionsize::Vector{Float64}
@@ -77,18 +78,18 @@ mutable struct ePPRModel
 end
 ePPRModel(ymean) = ePPRModel(ymean,[],[],[],[],[],[],[])
 length(m::ePPRModel)=length(m.beta)
-predict(m::ePPRModel)=m.ymean+squeeze(sum(cat(2,(m.beta.*m.phivalues)...),2),2)
-function predict(m::ePPRModel,x::Matrix,xpast::Union{Matrix,Void})
-    p = m.ymean
+predict(m::ePPRModel)=m.ymean.+dropdims(sum(cat((m.beta.*m.phivalues)...,dims=2),dims=2),dims=2)
+function predict(m::ePPRModel,x::Matrix,xpast::Union{Matrix,Nothing})
+    p = fill(m.ymean,size(x,1))
     for t in 1:length(m)
         j = m.index[t][1]
-        tx = j>0?[xpast[end-(j-1):end,:];x[1:end-j,:]]:x
-        p += m.beta[t]*m.phi[t](tx*m.alpha[t])
+        tx = j>0 ? [xpast[end-(j-1):end,:];x[1:end-j,:]] : x
+        p .+= m.beta[t].*m.phi[t](tx*m.alpha[t])
     end
     p
 end
 (m::ePPRModel)() = predict(m)
-(m::ePPRModel)(x::Matrix,xpast::Union{Matrix,Void}) = predict(m,x,xpast)
+(m::ePPRModel)(x::Matrix,xpast::Union{Matrix,Nothing}) = predict(m,x,xpast)
 function deleteat!(model::ePPRModel,i::Integer)
     deleteat!(model.beta,i)
     deleteat!(model.phi,i)
@@ -195,7 +196,7 @@ function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::I
 end
 
 function delaywindowpool(x::Matrix,xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5,debug::ePPRDebugOptions=ePPRDebugOptions())
-    vx = isempty(xindex)?x:x[:,xindex]
+    vx = isempty(xindex) ? x : x[:,xindex]
     ndelay<=1 && return vx
 
     debug("Nonlinear Time Interaction, pool x[i-$(ndelay-1):i] together ...")
@@ -208,19 +209,19 @@ end
 delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())=delaywindowpool(x,hp.xindex,hp.ndelay,hp.blankimage[1],debug)
 
 function delaywindowpooloperator(spatialoperator::Matrix,xindex::Vector{Int}=Int[],ndelay::Int=1)
-    vso = isempty(xindex)?spatialoperator:spatialoperator[xindex,xindex]
+    vso = isempty(xindex) ? spatialoperator : spatialoperator[xindex,xindex]
     ndelay<=1 && return vso
 
     nr,nc=size(vso)
     dwvo = zeros(ndelay*nr,ndelay*nc)
     for j in 0:ndelay-1
-        dwvo[(1:nr)+j*nr, (1:nc)+j*nc] = vso
+        dwvo[(1:nr).+j*nr, (1:nc).+j*nc] = vso
     end
     return dwvo
 end
 
 function delaywindowpoolblankimage(nrow::Int,ncol::Int,xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
-    pn = isempty(xindex)?nrow*ncol:length(xindex)
+    pn = isempty(xindex) ? nrow*ncol : length(xindex)
     fill(blankcolor,1,pn*ndelay)
 end
 
@@ -229,7 +230,7 @@ function getxpast(maxmemory,xi,x,blankimage)
         return nothing
     end
     pi = (xi[1]-maxmemory):(xi[1]-1)
-    cat(1,map(i->i<=0?blankimage:x[i:i,:],pi)...)
+    cat(map(i->i<=0 ? blankimage : x[i:i,:],pi)...,dims=1)
 end
 
 """
@@ -246,12 +247,12 @@ function cvpartitionindex(n::Int,cv::ePPRCrossValidation,debug::ePPRDebugOptions
     ntrain = Int(ntrainfold*cv.trainfold)
     trains=[]
     for tf in 0:cv.trainfold-1
-        traintest = Any[tf*ntrainfold + (1:ntraintestfold)+ttf*ntraintestfold for ttf in 0:cv.traintestfold-1]
-        train = setdiff(1:ntrain,tf*ntrainfold + (1:ntrainfold))
+        traintest = Any[tf*ntrainfold .+ (1:ntraintestfold).+ttf*ntraintestfold for ttf in 0:cv.traintestfold-1]
+        train = setdiff(1:ntrain,tf*ntrainfold .+ (1:ntrainfold))
         push!(trains,Any[train,traintest])
     end
     ntestfold = Int(floor((n-ntrain)/cv.testfold))
-    tests = Any[ntrain + (1:ntestfold)+tf*ntestfold for tf in 0:cv.testfold-1]
+    tests = Any[ntrain .+ (1:ntestfold).+tf*ntestfold for tf in 0:cv.testfold-1]
     debug("Cross Validation Data Partition: n = $n, ntrain = $ntrain in $(cv.trainfold)-fold, ntrainfold = $ntrainfold in $(cv.traintestfold)-fold, ntest = $(ntestfold*cv.testfold) in $(cv.testfold)-fold")
     cv.trains=trains;cv.tests=tests
     return cv
@@ -293,20 +294,20 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
 
     # find drop terms that do not improve model predication
     droptermp = [pvalue(SignedRankTest(traintestcors[m-1],traintestcors[m]),tail=:left) for m in 2:nmodel]
-    notimprove = find(droptermp .> hp.cv.modelselectpvalue)
+    notimprove = findall(droptermp .> hp.cv.modelselectpvalue)
     # find models with change level predication
     modelp = [pvalue(SignedRankTest(traintestcors[m]),tail=:both) for m in 2:nmodel]
-    notpredictive = find(modelp .> hp.cv.modelselectpvalue)
+    notpredictive = findall(modelp .> hp.cv.modelselectpvalue)
 
     poorterm = hp.droptermindex[union(notimprove,notpredictive)]
     # spurious terms in the selected model
-    spuriousterm = findin(model.index,poorterm)
+    spuriousterm = findall(in(poorterm),model.index)
     if !isempty(spuriousterm)
         debug("Model drop spurious term: $(model.index[spuriousterm]).")
         deleteat!.(model,sort(spuriousterm,rev=true))
     end
 
-    return length(model)==0?model:eppr(model,x[train,:],y[train],hp,debug)
+    return length(model)==0 ? model : eppr(model,x[train,:],y[train],hp,debug)
 end
 
 function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
@@ -322,7 +323,7 @@ end
 
 """
 extended Projection Pursuit Regression
-by minimizing ``f=\sum_{i=1}^N(y_i-\hat{y}(x_i))^2+\lambda\sum_{d=0}^D\sum_{m=1}^{M_d}\Vert{L\alpha_{m,d}}\Vert^2``
+by minimizing ``f=\\sum_{i=1}^N(y_i-\\hat{y}(x_i))^2+\\lambda\\sum_{d=0}^D\\sum_{m=1}^{M_d}\\Vert{L\\alpha_{m,d}}\\Vert^2``
 
 x: matrix with one image per row
 y: vector of response
@@ -344,15 +345,15 @@ function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,de
     js = map(t->t[1],m.index);is = map(t->t[2],m.index)
     ujs = unique(js);jis=Dict(j=>is[js.==j] for j in ujs);njis=Dict(j=>length(jis[j]) for j in ujs)
     debug("ePPR Model Forward Stepwise ...")
-    ym = mean(y);model = ePPRModel(ym);r=y-ym
+    ym = mean(y);model = ePPRModel(ym);r=y.-ym
     if hp.spatialtermfirst
         for j in ujs
-            tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
+            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
             for i in 1:njis[j]
                 debug("Fit Model [Temporal-$j, Spatial-$i] New Term ...")
                 α = normalize(m.alpha[ m.index .== [[j,jis[j][i]]] ][1],2)
                 β,Φ,α,Φvs = fitnewterm(tx,r,α,hp.phidf,debug)
-                r -= β*Φvs
+                r .-= β*Φvs
                 push!(model,β,Φ,α,[j,i],Φvs,0.0)
             end
         end
@@ -360,10 +361,10 @@ function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,de
         for i in 1:maximum(values(njis)),j in ujs
             i>njis[j] && continue
             debug("Fit Model [Temporal-$j, Spatial-$i] New Term ...")
-            tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
+            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
             α = normalize(m.alpha[ m.index .== [[j,jis[j][i]]] ][1],2)
             β,Φ,α,Φvs = fitnewterm(tx,r,α,hp.phidf,debug)
-            r -= β*Φvs
+            r .-= β*Φvs
             push!(model,β,Φ,α,[j,i],Φvs,0.0)
         end
     end
@@ -376,10 +377,10 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
     if hp.ndelay>1
         hp.nft=hp.nft[1:1]
     end
-    ym = mean(y);model = ePPRModel(ym);r=y-ym
+    ym = mean(y);model = ePPRModel(ym);r=y.-ym
     if hp.spatialtermfirst
         for j in 0:length(hp.nft)-1
-            tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
+            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
             for i in 1:hp.nft[j+1]
                 debug("Fit [Temporal-$j, Spatial-$i] New Term ...")
                 α = getinitialalpha(tx,r,debug)
@@ -392,7 +393,7 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
         for i in 1:maximum(hp.nft),j in 0:length(hp.nft)-1
             i>hp.nft[j+1] && continue
             debug("Fit [Temporal-$j, Spatial-$i] New Term ...")
-            tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
+            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
             α = getinitialalpha(tx,r,debug)
             β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,α,hp,debug)
             r -= β*Φvs
@@ -412,7 +413,7 @@ function refitmodel(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,deb
         r += oldβ*oldΦvs
 
         j = index[1];i=index[2]
-        tx = j>0?[repmat(hp.blankimage,j);x[1:end-j,:]]:x
+        tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
         debug("Refit [Temporal-$j, Spatial-$i] New Term ...")
         β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,oldα,hp,debug,convergerate=hp.refitconvergerate,trustregionsize=oldtrustregionsize)
         setterm(model,t,β,Φ,α,index,Φvs,trustregionsize)
@@ -435,16 +436,16 @@ function backwardstepwise(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperPara
     models=[deepcopy(model)];droptermindex=[]
     for i in length(model):-1:hp.mnbt+1
         model,index = dropleastimportantterm(model,debug)
-        unshift!(droptermindex,index)
+        pushfirst!(droptermindex,index)
         model = refitmodel(model,x,y,hp,debug)
         debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model))")
-        unshift!(models,deepcopy(model))
+        pushfirst!(models,deepcopy(model))
     end
     hp.droptermindex = droptermindex
     return models
 end
 
-dropleastimportantterm(model::ePPRModel,debug::ePPRDebugOptions=ePPRDebugOptions())=dropterm(model,indmin(abs.(model.beta)),debug)
+dropleastimportantterm(model::ePPRModel,debug::ePPRDebugOptions=ePPRDebugOptions())=dropterm(model,argmin(abs.(model.beta)),debug)
 
 function dropterm(model::ePPRModel,i::Integer,debug::ePPRDebugOptions=ePPRDebugOptions())
     index = model.index[i]
@@ -535,15 +536,15 @@ c: Bᵢ + λI positive definite
 ∥pˢ∥ = rᵢ => λ ⩾ 0, p(λ) = -(Bᵢ + λI)⁻¹gᵢ, Bᵢ + λI positive definite
 """
 function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H₀::Matrix,r::Float64,rmax::Float64,η::Float64,maxiteration::Int,debug::ePPRDebugOptions)
-    eh = eigfact(Symmetric(H₀))
+    eh = eigen(Symmetric(H₀))
     posdef = isposdef(eh)
-    qᵀg = eh[:vectors]'*g₀
+    qᵀg = eh.vectors'*g₀
     if posdef
-        pˢ = -eh[:vectors]*(qᵀg./eh[:values])
+        pˢ = -eh.vectors*(qᵀg./eh.values)
         pˢₙ = norm(pˢ,2)
     end
-    ehminvalue = minimum(eh[:values])
-    λe = eh[:values]-ehminvalue
+    ehminvalue = minimum(eh.values)
+    λe = eh.values.-ehminvalue
     ehminidx = λe .== 0
     C1 = sum((qᵀg./λe)[.!ehminidx].^2)
     C2 = sum(qᵀg[ehminidx].^2)
@@ -572,7 +573,7 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
                             return sqrt(1/C1) - 1/r
                         end
                     end
-                    return 1/norm(qᵀg./(λe+λ),2) - 1/r
+                    return 1/norm(qᵀg./(λe.+λ),2) - 1/r
                 end
                 if ϕ(λup) <= 0
                     λ = λup
@@ -581,7 +582,7 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
                 else
                     λ = fzero(ϕ,λdn,λup)
                 end
-                pᵢ = -eh[:vectors]*(qᵀg./(λe+λ))
+                pᵢ = -eh.vectors*(qᵀg./(λe.+λ))
             else
                 # hard-hard case
                 iseasy = false
@@ -589,8 +590,8 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
                 w = qᵀg./λe
                 w[ehminidx]=0
                 τ = sqrt(r^2-C1)
-                𝑧 = eh[:vectors][:,1]
-                pᵢ = -eh[:vectors]*w + τ*𝑧
+                𝑧 = eh.vectors[:,1]
+                pᵢ = -eh.vectors*w + τ*𝑧
             end
         end
         # ρ: ratio of actual change versus predicted change
@@ -609,7 +610,7 @@ function newtontrustregion(f::Function,x₀::Vector,f₀::Float64,g₀::Vector,H
                 steptype="λ = 0"
             else
                 if ishard
-                    steptype=iseasy?"hard-easy":"hard-hard"
+                    steptype=iseasy ? "hard-easy" : "hard-hard"
                 else
                     steptype="easy"
                 end
@@ -633,13 +634,13 @@ function getinitialalpha(x::Matrix,r::Vector,debug::ePPRDebugOptions=ePPRDebugOp
     lmr = lm.ridge($r ~ 0 + $x, lambda=lmr$kLW)
     coefficients(lmr)
     """)
-    α-=mean(α);normalize!(α,2);α
+    α.-=mean(α);normalize!(α,2);α
 end
 
 function refitmodelbetas(model::ePPRModel,y::Vector,debug::ePPRDebugOptions=ePPRDebugOptions())
     debug("Refit Model βs ...")
-    x = cat(2,model.phivalues...)
-    res = lm(x,y-model.ymean)
+    x = cat(model.phivalues...,dims=2)
+    res = lm(x,y.-model.ymean)
     β = coef(res)
     debug("Old βs: $(model.beta)")
     debug("New βs: $β")
@@ -678,50 +679,50 @@ function laplacian2dmatrix(nrow::Int,ncol::Int)
     downright=[0  0  0;
                0 -1 -1;
                0 -1  3]
-    ldim=(nrow,ncol)
+    lli = LinearIndices((nrow,ncol))
     lm = zeros(nrow*ncol,nrow*ncol)
     # fill center
     for r in 2:nrow-1, c in 2:ncol-1
         f=zeros(nrow,ncol)
         f[r-1:r+1,c-1:c+1]=center
-        lm[sub2ind(ldim,r,c),:]=vec(f)
+        lm[lli[r,c],:]=vec(f)
     end
     for c in 2:ncol-1
         # fill first row
         r=1;f=zeros(nrow,ncol)
         f[r:r+2,c-1:c+1]=firstrow
-        lm[sub2ind(ldim,r,c),:]=vec(f)
+        lm[lli[r,c],:]=vec(f)
         # fill last row
         r=nrow;f=zeros(nrow,ncol)
         f[r-2:r,c-1:c+1]=lastrow
-        lm[sub2ind(ldim,r,c),:]=vec(f)
+        lm[lli[r,c],:]=vec(f)
     end
     for r in 2:nrow-1
         # fill first col
         c=1;f=zeros(nrow,ncol)
         f[r-1:r+1,c:c+2]=firstcol
-        lm[sub2ind(ldim,r,c),:]=vec(f)
+        lm[lli[r,c],:]=vec(f)
         # fill last col
         c=ncol;f=zeros(nrow,ncol)
         f[r-1:r+1,c-2:c]=lastcol
-        lm[sub2ind(ldim,r,c),:]=vec(f)
+        lm[lli[r,c],:]=vec(f)
     end
     # fill top left
     r=1;c=1;f=zeros(nrow,ncol)
     f[r:r+2,c:c+2]=topleft
-    lm[sub2ind(ldim,r,c),:]=vec(f)
+    lm[lli[r,c],:]=vec(f)
     # fill top right
     r=1;c=ncol;f=zeros(nrow,ncol)
     f[r:r+2,c-2:c]=topright
-    lm[sub2ind(ldim,r,c),:]=vec(f)
+    lm[lli[r,c],:]=vec(f)
     # fill down left
     r=nrow;c=1;f=zeros(nrow,ncol)
     f[r-2:r,c:c+2]=downleft
-    lm[sub2ind(ldim,r,c),:]=vec(f)
+    lm[lli[r,c],:]=vec(f)
     # fill down right
     r=nrow;c=ncol;f=zeros(nrow,ncol)
     f[r-2:r,c-2:c]=downright
-    lm[sub2ind(ldim,r,c),:]=vec(f)
+    lm[lli[r,c],:]=vec(f)
     return lm
 end
 

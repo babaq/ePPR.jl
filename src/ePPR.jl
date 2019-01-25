@@ -3,9 +3,9 @@ module ePPR
 
 import Base.length,Base.push!,Base.deleteat!,StatsBase.predict
 export ePPRDebugOptions,DebugNone,DebugBasic,DebugFull,DebugVisual,
-delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionindex,getinitialalpha,refitmodelbetas,laplacian2dmatrix,
+delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionindex!,getinitialalpha,refitmodelbetas,laplacian2dmatrix,
 ePPRModel,getterm,setterm,clean,ePPRHyperParams,ePPRCrossValidation,
-eppr,epprcv,cvmodel,forwardstepwise,refitmodel,backwardstepwise,dropterm,lossfun,fitnewterm,newtontrustregion
+eppr,epprcv,epprhypercv,cvmodel,forwardstepwise,refitmodel,backwardstepwise,dropterm,lossfun,fitnewterm,newtontrustregion
 
 using LinearAlgebra,Statistics,GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
 R"library('MASS')"
@@ -17,12 +17,11 @@ const DebugNone=0
 const DebugBasic=1
 const DebugFull=2
 const DebugVisual=3
-mutable struct ePPRDebugOptions
-    level::Int
-    logdir
-    logio
+Base.@kwdef mutable struct ePPRDebugOptions
+    level::Int = DebugNone
+    logdir = nothing
+    logio = nothing
 end
-ePPRDebugOptions(;level=DebugNone,logdir=nothing,logio=nothing)=ePPRDebugOptions(level,logdir,logio)
 
 function (debug::ePPRDebugOptions)(msg;level::Int=DebugBasic,log="ePPR.log",once=false)
     if debug.level >= level
@@ -125,66 +124,65 @@ function clean(model::ePPRModel)
     return model
 end
 
-mutable struct ePPRCrossValidation
-    trainpercent::Float64
-    trainfold::Int
-    testfold::Int
-    traintestfold::Int
-    trainindex::Int
-    modelselectpvalue::Float64
-    trains
-    tests
-    traintestcors
+Base.@kwdef mutable struct ePPRCrossValidation
+    trainpercent::Float64 = 0.88
+    trainfold::Int = 5
+    testfold::Int = 8
+    traintestfold::Int = 8
+    trainsets = []
+    tests = []
+    trainsetindex::Int = 1
+    h0level::Float64 = 0.05
+    h1level::Float64 = 0.05
+    traintestcors = []
 end
-ePPRCrossValidation() = ePPRCrossValidation(0.9,5,8,8,1,0.08,[],[],[])
 
 """
 Hyper Parameters for ePPR
 """
-mutable struct ePPRHyperParams
+Base.@kwdef mutable struct ePPRHyperParams
     """memory size to pool for nonlinear time interaction, ndelay=1 for linear time interaction.
     only first delay terms in `nft` is used for nonlinear time interaction."""
-    ndelay::Int
+    ndelay::Int = 1
     "number of forward terms for each delay. [3, 2, 1] means 3 spatial terms for delay 0, 2 for delay 1, 1 for delay 2"
-    nft::Vector{Int}
+    nft::Vector{Int} = [3,3,3]
     "penalization parameter λ"
-    lambda::Float64
+    lambda::Float64 = 30
     "Φ Spline degree of freedom"
-    phidf::Int
+    phidf::Int = 5
     "minimum number of backward terms"
-    mnbt::Int
-    "whether to fit all spatial terms before moving to next temporal"
-    spatialtermfirst::Bool
+    mnbt::Int = 1
+    "whether to fit all spatial terms before moving to next temporal delay"
+    spatialtermfirst::Bool = true
     "α priori for penalization"
-    alphapenaltyoperator
+    alphapenaltyoperator = []
     "`(lossₒ-lossₙ)/lossₒ`, forward converge rate threshold to decide a saturated iteration"
-    forwardconvergerate::Float64
+    forwardconvergerate::Float64 = 0.01
     "`(lossₒ-lossₙ)/lossₒ`, refit converge rate threshold to decide a saturated iteration"
-    refitconvergerate::Float64
+    refitconvergerate::Float64 = 0.001
     "number of consecutive saturated iterations to decide a solution"
-    nsaturatediteration::Int
+    nsaturatediteration::Int = 2
     "maximum number of iterations to fit a new term"
-    newtermmaxiteration::Int
+    newtermmaxiteration::Int = 100
     "initial size of trust region"
-    trustregioninitsize::Float64
+    trustregioninitsize::Float64 = 1
     "maximum size of trust region"
-    trustregionmaxsize::Float64
+    trustregionmaxsize::Float64 = 1000
     "η of trust region"
-    trustregioneta::Float64
+    trustregioneta::Float64 = 0.2
     "maximum iterations of trust region"
-    trustregionmaxiteration::Int
+    trustregionmaxiteration::Int = 1000
     "row vector of blank image"
-    blankimage
+    blankimage = []
     "dimension of image"
-    imagesize
+    imagesize = []
     "drop term index between backward models"
-    droptermindex
+    droptermindex = []
     "ePPR Cross Validation"
-    cv::ePPRCrossValidation
+    cv::ePPRCrossValidation = ePPRCrossValidation()
     "Valid Image Region"
-    xindex::Vector{Int}
+    xindex::Vector{Int} = Int[]
 end
-ePPRHyperParams()=ePPRHyperParams(1,[2,2],15,5,1,true,[],0.01,0.001,2,100,1,1000,0.2,1000,[],[],[],ePPRCrossValidation(),Int[])
 function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
     hp=ePPRHyperParams()
     hp.imagesize = (nrow,ncol)
@@ -236,31 +234,31 @@ end
 """
 Data partition for cross validation
 
-n: data size
 cv: cross validation
+n: sample number
 """
-function cvpartitionindex(n::Int,cv::ePPRCrossValidation,debug::ePPRDebugOptions=ePPRDebugOptions())
+function cvpartitionindex!(cv::ePPRCrossValidation,n::Int,debug::ePPRDebugOptions=ePPRDebugOptions())
     ntrain = cv.trainpercent*n
     ntrainfold = ntrain/cv.trainfold
     ntraintestfold = Int(floor(ntrainfold/cv.traintestfold))
-    ntrainfold = Int(ntraintestfold*cv.traintestfold)
-    ntrain = Int(ntrainfold*cv.trainfold)
-    trains=[]
+    ntrainfold = ntraintestfold*cv.traintestfold
+    ntrain = ntrainfold*cv.trainfold
+    trainsets=[]
     for tf in 0:cv.trainfold-1
-        traintest = Any[tf*ntrainfold .+ (1:ntraintestfold).+ttf*ntraintestfold for ttf in 0:cv.traintestfold-1]
+        traintest = Any[tf*ntrainfold .+ (1:ntraintestfold) .+ ttf*ntraintestfold for ttf in 0:cv.traintestfold-1]
         train = setdiff(1:ntrain,tf*ntrainfold .+ (1:ntrainfold))
-        push!(trains,Any[train,traintest])
+        push!(trainsets,(train=train,traintest=traintest))
     end
     ntestfold = Int(floor((n-ntrain)/cv.testfold))
-    tests = Any[ntrain .+ (1:ntestfold).+tf*ntestfold for tf in 0:cv.testfold-1]
+    tests = Any[ntrain .+ (1:ntestfold) .+ tf*ntestfold for tf in 0:cv.testfold-1]
     debug("Cross Validation Data Partition: n = $n, ntrain = $ntrain in $(cv.trainfold)-fold, ntrainfold = $ntrainfold in $(cv.traintestfold)-fold, ntest = $(ntestfold*cv.testfold) in $(cv.testfold)-fold")
-    cv.trains=trains;cv.tests=tests
+    cv.trainsets=trainsets;cv.tests=tests
     return cv
 end
 
 function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
-    debug("ePPR Cross Validation ...")
-    train = hp.cv.trains[hp.cv.trainindex][1];traintest = hp.cv.trains[hp.cv.trainindex][2]
+    debug("ePPR Models Cross Validation ...")
+    train = hp.cv.trainsets[hp.cv.trainsetindex].train;traintest = hp.cv.trainsets[hp.cv.trainsetindex].traintest
     # response and model predication
     maxmemory = length(hp.nft)-1
     traintestpredications = map(m->map(i->m(x[i,:],getxpast(maxmemory,i,x,hp.blankimage)),traintest),models)
@@ -268,20 +266,18 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
     hp.cv.traintestcors = traintestcors
-    debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Model_Goodness")
+    debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Models_Goodness")
     # find the model no worse than models with more terms, and better than models with less terms
     mi=0;nmodel=length(models)
     for rm in 1:nmodel
         moretermp = [pvalue(SignedRankTest(traintestcors[rm],traintestcors[m]),tail=:left) for m in rm+1:nmodel]
-        if rm==1 && (rm==nmodel || all(moretermp .> hp.cv.modelselectpvalue))
-            mi=rm
-            break
+        if rm==1 && (1==nmodel || all(moretermp .> hp.cv.h0level))
+            mi=rm;break
         end
-        if rm==nmodel || all(moretermp .> hp.cv.modelselectpvalue)
+        if rm==nmodel || all(moretermp .> hp.cv.h0level)
             lesstermp = [pvalue(SignedRankTest(traintestcors[m],traintestcors[rm]),tail=:left) for m in 1:rm-1]
-            if all(lesstermp .< hp.cv.modelselectpvalue)
-                mi=rm
-                break
+            if all(lesstermp .< hp.cv.h1level)
+                mi=rm;break
             end
         end
     end
@@ -294,17 +290,17 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
 
     # find drop terms that do not improve model predication
     droptermp = [pvalue(SignedRankTest(traintestcors[m-1],traintestcors[m]),tail=:left) for m in 2:nmodel]
-    notimprove = findall(droptermp .> hp.cv.modelselectpvalue)
-    # find models with change level predication
+    notimprove = findall(droptermp .> hp.cv.h0level)
+    # find drop term models with change level(zero correlation) predication
     modelp = [pvalue(SignedRankTest(traintestcors[m]),tail=:both) for m in 2:nmodel]
-    notpredictive = findall(modelp .> hp.cv.modelselectpvalue)
+    notpredictive = findall(modelp .> hp.cv.h0level)
 
     poorterm = hp.droptermindex[union(notimprove,notpredictive)]
     # spurious terms in the selected model
     spuriousterm = findall(in(poorterm),model.index)
     if !isempty(spuriousterm)
         debug("Model drop spurious term: $(model.index[spuriousterm]).")
-        deleteat!.(model,sort(spuriousterm,rev=true))
+        foreach(i->deleteat!(model,i),sort(spuriousterm,rev=true))
     end
 
     return length(model)==0 ? model : eppr(model,x[train,:],y[train],hp,debug)
@@ -312,13 +308,17 @@ end
 
 function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     n = length(y);n !=size(x,1) && error("Length of x and y does not match!")
-    cvpartitionindex(n,hp.cv,debug)
-    train = hp.cv.trains[hp.cv.trainindex][1]
+    cvpartitionindex!(hp.cv,n,debug)
+    train = hp.cv.trainsets[hp.cv.trainsetindex].train
     px = delaywindowpool(x,hp,debug)
     models = eppr(px[train,:],y[train],hp,debug)
     model = cvmodel(models,px,y,hp,debug)
     debug("Cross Validated ePPR Done.",once=true)
     return model,models
+end
+
+function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
+
 end
 
 """

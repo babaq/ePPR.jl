@@ -1,17 +1,15 @@
 __precompile__(false)
 module ePPR
 
-import Base.length,Base.push!,Base.deleteat!,StatsBase.predict
+import Base.length,Base.push!,Base.deleteat!
 export ePPRDebugOptions,DebugNone,DebugBasic,DebugFull,DebugVisual,
-delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionindex!,getinitialalpha,refitmodelbetas,laplacian2dmatrix,
-ePPRModel,getterm,setterm,clean,ePPRHyperParams,ePPRCrossValidation,
-eppr,epprcv,epprhypercv,cvmodel,forwardstepwise,refitmodel,backwardstepwise,dropterm,lossfun,fitnewterm,newtontrustregion
+delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionindex!,getinitialalpha,refitmodelbetas!,laplacian2dmatrix,
+ePPRModel,getterm,setterm!,clean!,ePPRHyperParams,ePPRCrossValidation,
+eppr,epprcv,epprhypercv,cvmodel,forwardstepwise,refitmodel!,backwardstepwise,dropleastimportantterm!,dropterm!,lossfun,fitnewterm,newtontrustregion
 
 using LinearAlgebra,Statistics,GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
 R"library('MASS')"
-#plotlyjs()
-gr()
-clibrary(:colorcet)
+pyplot();clibrary(:colorcet)
 
 const DebugNone=0
 const DebugBasic=1
@@ -57,28 +55,27 @@ end
 ``\\hat{y}_i=\\bar{y}+\\sum_{d=0}^D\\sum_{m=1}^{M_d}\\beta_{m,d}\\phi_{m,d}(\\alpha_{m,d}^Tx_{i-d})``
 with ``\\frac{1}{n}\\sum_{i=1}^n\\phi_{m,d}(\\alpha_{m,d}^Tx_{i-d})=0``, ``\\frac{1}{n}\\sum_{i=1}^n\\phi_{m,d}^2(\\alpha_{m,d}^Tx_{i-d})=1``
 """
-mutable struct ePPRModel
+Base.@kwdef mutable struct ePPRModel
     "𝑦̄"
-    ymean::Float64
+    ymean::Float64 = 0.0
     "vector of β for each term"
-    beta::Vector{Float64}
+    beta::Vector{Float64} = []
     "vector of Φ for each term"
-    phi::Vector
+    phi::Vector = []
     "vector of α for each term"
-    alpha::Vector{Vector{Float64}}
-    "vector of [temporal, spatial] index for each term"
-    index::Vector{Vector{Int}}
+    alpha::Vector{Vector{Float64}} = []
+    "vector of (temporal, spatial) index for each term"
+    index::Vector = []
     "vector of ``\\phi_{m,d}(\\alpha_{m,d}^TX_{-d})`` for each term"
-    phivalues::Vector{Vector{Float64}}
+    phivalues::Vector{Vector{Float64}} = []
     "vector of trustregionsize for each term"
-    trustregionsize::Vector{Float64}
+    trustregionsize::Vector{Float64} = []
     "γ"
-    residuals::Vector{Float64}
+    residuals::Vector{Float64} = []
 end
-ePPRModel(ymean) = ePPRModel(ymean,[],[],[],[],[],[],[])
 length(m::ePPRModel)=length(m.beta)
-predict(m::ePPRModel)=m.ymean.+dropdims(sum(cat((m.beta.*m.phivalues)...,dims=2),dims=2),dims=2)
-function predict(m::ePPRModel,x::Matrix,xpast::Union{Matrix,Nothing})
+(m::ePPRModel)() = m.ymean.+dropdims(sum(cat((m.beta.*m.phivalues)...,dims=2),dims=2),dims=2)
+function (m::ePPRModel)(x::Matrix,xpast::Union{Matrix,Nothing})
     p = fill(m.ymean,size(x,1))
     for t in 1:length(m)
         j = m.index[t][1]
@@ -87,8 +84,6 @@ function predict(m::ePPRModel,x::Matrix,xpast::Union{Matrix,Nothing})
     end
     p
 end
-(m::ePPRModel)() = predict(m)
-(m::ePPRModel)(x::Matrix,xpast::Union{Matrix,Nothing}) = predict(m,x,xpast)
 function deleteat!(model::ePPRModel,i::Integer)
     deleteat!(model.beta,i)
     deleteat!(model.phi,i)
@@ -97,7 +92,7 @@ function deleteat!(model::ePPRModel,i::Integer)
     deleteat!(model.phivalues,i)
     deleteat!(model.trustregionsize,i)
 end
-function push!(model::ePPRModel,β::Float64,Φ,α::Vector{Float64},index::Vector{Int},Φvs::Vector{Float64},trustregionsize::Float64)
+function push!(model::ePPRModel,β::Float64,Φ,α::Vector{Float64},index,Φvs::Vector{Float64},trustregionsize::Float64=1.0)
     push!(model.beta,β)
     push!(model.phi,Φ)
     push!(model.alpha,α)
@@ -108,7 +103,7 @@ end
 function getterm(model::ePPRModel,i::Integer)
     return model.beta[i],model.phi[i],model.alpha[i],model.index[i],model.phivalues[i],model.trustregionsize[i]
 end
-function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},index::Vector{Int},Φvs::Vector{Float64},trustregionsize::Float64)
+function setterm!(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},index,Φvs::Vector{Float64},trustregionsize::Float64=1.0)
     model.beta[i]=β
     model.phi[i]=Φ
     model.alpha[i]=α
@@ -116,8 +111,8 @@ function setterm(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64},
     model.phivalues[i]=Φvs
     model.trustregionsize[i]=trustregionsize
 end
-clean(model)=model
-function clean(model::ePPRModel)
+clean!(model)=model
+function clean!(model::ePPRModel)
     model.phivalues=[]
     model.trustregionsize=[]
     model.residuals=[]
@@ -135,6 +130,8 @@ Base.@kwdef mutable struct ePPRCrossValidation
     h0level::Float64 = 0.05
     h1level::Float64 = 0.05
     traintestcors = []
+    modeltraintestcor = []
+    modeltestcor = []
 end
 
 """
@@ -182,6 +179,8 @@ Base.@kwdef mutable struct ePPRHyperParams
     cv::ePPRCrossValidation = ePPRCrossValidation()
     "Valid Image Region"
     xindex::Vector{Int} = Int[]
+    "maximum iterations of hyperparameter search"
+    hypermaxiteration = 50
 end
 function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
     hp=ePPRHyperParams()
@@ -258,14 +257,14 @@ end
 
 function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     debug("ePPR Models Cross Validation ...")
-    train = hp.cv.trainsets[hp.cv.trainsetindex].train;traintest = hp.cv.trainsets[hp.cv.trainsetindex].traintest
+    train = hp.cv.trainsets[hp.cv.trainsetindex].train;traintest = hp.cv.trainsets[hp.cv.trainsetindex].traintest;test=hp.cv.tests
     # response and model predication
     maxmemory = length(hp.nft)-1
     traintestpredications = map(m->map(i->m(x[i,:],getxpast(maxmemory,i,x,hp.blankimage)),traintest),models)
     traintestys = map(i->y[i],traintest)
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
-    hp.cv.traintestcors = traintestcors
+    hp.cv.traintestcors = traintestcors;hp.cv.modeltraintestcor=[];hp.cv.modeltestcor=[]
     debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Models_Goodness")
     # find the model no worse than models with more terms, and better than models with less terms
     mi=0;nmodel=length(models)
@@ -302,8 +301,11 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
         debug("Model drop spurious term: $(model.index[spuriousterm]).")
         foreach(i->deleteat!(model,i),sort(spuriousterm,rev=true))
     end
-
-    return length(model)==0 ? model : eppr(model,x[train,:],y[train],hp,debug)
+    length(model)==0 && return nothing
+    model = eppr(model,x[train,:],y[train],hp,debug)
+    hp.cv.modeltraintestcor = map(i->cor(y[i],model(x[i,:],getxpast(maxmemory,i,x,hp.blankimage))),traintest)
+    hp.cv.modeltestcor = map(i->cor(y[i],model(x[i,:],getxpast(maxmemory,i,x,hp.blankimage))),test)
+    return model
 end
 
 function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
@@ -318,7 +320,56 @@ function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=
 end
 
 function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
+    n = length(y);n !=size(x,1) && error("Length of x and y does not match!")
+    cvpartitionindex!(hp.cv,n,debug)
+    train = hp.cv.trainsets[hp.cv.trainsetindex].train
+    px = delaywindowpool(x,hp,debug)
 
+    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcors=[];nsaturatediteration=0;maxsaturation=2
+    hp.lambda = 2
+    for i in 1:hp.hypermaxiteration
+        debug("HyperParameter Search: λ = $(hp.lambda) ...")
+        models = eppr(px[train,:],y[train],hp,debug)
+        model = cvmodel(models,px,y,hp,debug)
+        debug("Cross Validated ePPR Done.")
+        if !isnothing(model)
+            push!(hypermodel,model);push!(hypermodels,models);push!(λs,hp.lambda);push!(modelcors,[hp.cv.modeltraintestcor;hp.cv.modeltestcor])
+            if length(modelcors)==1
+                hp.lambda *=2
+            else
+                improvep = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:left)
+                if improvep < hp.cv.h1level
+                    nsaturatediteration=0
+                    hp.lambda *= 2.5
+                else
+                    impirep = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:right)
+                    if impirep < hp.cv.h1level
+                        hi=length(hypermodel)-1;break
+                    else
+                        nsaturatediteration+=1
+                        if nsaturatediteration>=maxsaturation
+                            hi=length(hypermodel);break
+                        else
+                            hp.lambda *= 1.5
+                        end
+                    end
+                end
+            end
+        else
+            hp.lambda *=2
+        end
+    end
+    debug.level >= DebugVisual && !isempty(modelcors) && debug(plotcor(λs,modelcors,xlabel="λ"),log="λ_Models_Goodness")
+    if hi==0
+        if length(hypermodel)>0
+            _,hi=findmax(mean.(modelcors))
+        else
+            return nothing,[]
+        end
+    end
+    debug("HyperParameter Search Done.",once=true)
+    hp.lambda = λs[hi]
+    return hypermodel[hi],hypermodels[hi]
 end
 
 """
@@ -326,49 +377,46 @@ extended Projection Pursuit Regression
 by minimizing ``f=\\sum_{i=1}^N(y_i-\\hat{y}(x_i))^2+\\lambda\\sum_{d=0}^D\\sum_{m=1}^{M_d}\\Vert{L\\alpha_{m,d}}\\Vert^2``
 
 x: matrix with one image per row
-y: vector of response
+y: vector of responses
 hp: hyper parameters
 debug: debug options
 """
 function eppr(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     model = forwardstepwise(x,y,hp,debug)
-    model = refitmodel(model,x,y,hp,debug)
+    model = refitmodel!(model,x,y,hp,debug)
     models = backwardstepwise(model,x,y,hp,debug)
 end
 function eppr(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
-    model = forwardstepwise(model,x,y,hp,debug)
-    model,model.residuals = refitmodelbetas(model,y,debug)
-    return model
+    refitmodelbetas!(forwardstepwise(model,x,y,hp,debug),y,debug)
 end
 
 function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
-    js = map(t->t[1],m.index);is = map(t->t[2],m.index)
-    ujs = unique(js);jis=Dict(j=>is[js.==j] for j in ujs);njis=Dict(j=>length(jis[j]) for j in ujs)
+    ti = map(i->i.t,m.index);si = map(i->i.s,m.index)
+    ut = sort(unique(ti));uts=Dict(t=>si[ti.==t] for t in ut);utsn=Dict(t=>length(uts[t]) for t in ut)
     debug("ePPR Model Forward Stepwise ...")
-    ym = mean(y);model = ePPRModel(ym);r=y.-ym
+    ym = mean(y);model = ePPRModel(ymean=ym);model.residuals=y.-ym
     if hp.spatialtermfirst
-        for j in ujs
-            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
-            for i in 1:njis[j]
-                debug("Fit Model [Temporal-$j, Spatial-$i] New Term ...")
-                α = normalize(m.alpha[ m.index .== [[j,jis[j][i]]] ][1],2)
-                β,Φ,α,Φvs = fitnewterm(tx,r,α,hp.phidf,debug)
-                r .-= β*Φvs
-                push!(model,β,Φ,α,[j,i],Φvs,0.0)
+        for t in ut
+            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            for s in 1:utsn[t]
+                debug("Fit Model (Temporal-$t, Spatial-$s) New Term ...")
+                α = normalize(m.alpha[findfirst(==((t=t,s=uts[t][s])),m.index)], 2)
+                β,Φ,α,Φvs = fitnewterm(tx,model.residuals,α,hp.phidf,debug)
+                model.residuals .-= β*Φvs
+                push!(model,β,Φ,α,(t=t,s=s),Φvs)
             end
         end
     else
-        for i in 1:maximum(values(njis)),j in ujs
-            i>njis[j] && continue
-            debug("Fit Model [Temporal-$j, Spatial-$i] New Term ...")
-            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
-            α = normalize(m.alpha[ m.index .== [[j,jis[j][i]]] ][1],2)
-            β,Φ,α,Φvs = fitnewterm(tx,r,α,hp.phidf,debug)
-            r .-= β*Φvs
-            push!(model,β,Φ,α,[j,i],Φvs,0.0)
+        for s in 1:maximum(values(utsn)), t in ut
+            s>utsn[t] && continue
+            debug("Fit Model (Temporal-$t, Spatial-$s) New Term ...")
+            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            α = normalize(m.alpha[findfirst(==((t=t,s=uts[t][s])),m.index)], 2)
+            β,Φ,α,Φvs = fitnewterm(tx,model.residuals,α,hp.phidf,debug)
+            model.residuals .-= β*Φvs
+            push!(model,β,Φ,α,(t=t,s=s),Φvs)
         end
     end
-    model.residuals=r
     return model
 end
 
@@ -377,82 +425,79 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
     if hp.ndelay>1
         hp.nft=hp.nft[1:1]
     end
-    ym = mean(y);model = ePPRModel(ym);r=y.-ym
+    ym = mean(y);model = ePPRModel(ymean=ym);model.residuals=y.-ym
     if hp.spatialtermfirst
-        for j in 0:length(hp.nft)-1
-            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
-            for i in 1:hp.nft[j+1]
-                debug("Fit [Temporal-$j, Spatial-$i] New Term ...")
-                α = getinitialalpha(tx,r,debug)
-                β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,α,hp,debug)
-                r -= β*Φvs
-                push!(model,β,Φ,α,[j,i],Φvs,trustregionsize)
+        for t in 0:length(hp.nft)-1
+            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            for s in 1:hp.nft[t+1]
+                debug("Fit (Temporal-$t, Spatial-$s) New Term ...")
+                α = getinitialalpha(tx,model.residuals,debug)
+                β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,model.residuals,α,hp,debug)
+                model.residuals .-= β*Φvs
+                push!(model,β,Φ,α,(t=t,s=s),Φvs,trustregionsize)
             end
         end
     else
-        for i in 1:maximum(hp.nft),j in 0:length(hp.nft)-1
-            i>hp.nft[j+1] && continue
-            debug("Fit [Temporal-$j, Spatial-$i] New Term ...")
-            tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
-            α = getinitialalpha(tx,r,debug)
-            β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,α,hp,debug)
-            r -= β*Φvs
-            push!(model,β,Φ,α,[j,i],Φvs,trustregionsize)
+        for s in 1:maximum(hp.nft), t in 0:length(hp.nft)-1
+            s>hp.nft[t+1] && continue
+            debug("Fit (Temporal-$t, Spatial-$s) New Term ...")
+            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            α = getinitialalpha(tx,model.residuals,debug)
+            β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,model.residuals,α,hp,debug)
+            model.residuals .-= β*Φvs
+            push!(model,β,Φ,α,(t=t,s=s),Φvs,trustregionsize)
         end
     end
-    model.residuals=r
     return model
 end
 
-function refitmodel(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
+function refitmodel!(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     debug("ePPR Model Refit ...")
-    model,r = refitmodelbetas(model,y,debug)
-    for t in 1:length(model)
+    model = refitmodelbetas!(model,y,debug)
+    for i in 1:length(model)
         oldloss = lossfun(model,y,hp)
-        oldβ,oldΦ,oldα,index,oldΦvs,oldtrustregionsize = getterm(model,t)
-        r += oldβ*oldΦvs
+        oldβ,oldΦ,oldα,index,oldΦvs,oldtrustregionsize = getterm(model,i)
+        model.residuals .+= oldβ*oldΦvs
 
-        j = index[1];i=index[2]
-        tx = j>0 ? [repeat(hp.blankimage,outer=(j,1));x[1:end-j,:]] : x
-        debug("Refit [Temporal-$j, Spatial-$i] New Term ...")
-        β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,r,oldα,hp,debug,convergerate=hp.refitconvergerate,trustregionsize=oldtrustregionsize)
-        setterm(model,t,β,Φ,α,index,Φvs,trustregionsize)
+        t = index.t;s=index.s
+        tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+        debug("Refit (Temporal-$t, Spatial-$s) New Term ...")
+        β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,model.residuals,oldα,hp,debug,convergerate=hp.refitconvergerate,trustregionsize=oldtrustregionsize)
+        setterm!(model,i,β,Φ,α,index,Φvs,trustregionsize)
         newloss = lossfun(model,y,hp)
         if newloss > oldloss
             debug("Model Loss increased from $oldloss to $newloss. Discard the new term, keep the old one.")
-            setterm(model,t,oldβ,oldΦ,oldα,index,oldΦvs,oldtrustregionsize)
-            r -= oldβ*oldΦvs
+            setterm!(model,i,oldβ,oldΦ,oldα,index,oldΦvs,oldtrustregionsize)
+            model.residuals .-= oldβ*oldΦvs
         else
-            r -= β*Φvs
+            model.residuals .-= β*Φvs
         end
     end
-    model.residuals=r
     return model
 end
 
 function backwardstepwise(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     debug("ePPR Backward Stepwise ...")
     debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model))")
-    models=[deepcopy(model)];droptermindex=[]
-    for i in length(model):-1:hp.mnbt+1
-        model,index = dropleastimportantterm(model,debug)
-        pushfirst!(droptermindex,index)
-        model = refitmodel(model,x,y,hp,debug)
+    models=[deepcopy(model)];hp.droptermindex=[]
+    for i in length(model)-1:-1:hp.mnbt
+        model,dropindex = dropleastimportantterm!(model,debug)
+        pushfirst!(hp.droptermindex,dropindex)
+        model = refitmodel!(model,x,y,hp,debug)
         debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model))")
         pushfirst!(models,deepcopy(model))
     end
-    hp.droptermindex = droptermindex
     return models
 end
 
-dropleastimportantterm(model::ePPRModel,debug::ePPRDebugOptions=ePPRDebugOptions())=dropterm(model,argmin(abs.(model.beta)),debug)
+dropleastimportantterm!(model::ePPRModel,debug::ePPRDebugOptions=ePPRDebugOptions())=dropterm!(model,argmin(abs.(model.beta)),debug)
 
-function dropterm(model::ePPRModel,i::Integer,debug::ePPRDebugOptions=ePPRDebugOptions())
-    index = model.index[i]
+function dropterm!(model::ePPRModel,i::Integer,debug::ePPRDebugOptions=ePPRDebugOptions())
+    dropindex = model.index[i]
     β=model.beta[i]
-    debug("Drop Term: [temporal-$(index[1]), spatial-$(index[2])] with β: $(β).")
+    debug("Drop Term: (temporal-$(dropindex.t), spatial-$(dropindex.s)) with β: $(β).")
     deleteat!(model,i)
-    return model,index
+    return model,dropindex
 end
 
 lossfun(g::Vector) = 0.5*norm(g,2)^2
@@ -463,7 +508,7 @@ f(α) = sum((r-Φ(x*α)).^2) + λ*norm(hp.alphapenaltyoperator*α,2)^2
 lossfun(r::Vector,x::Matrix,α::Vector,Φ,hp::ePPRHyperParams) = lossfun([r-Φ(x*α);sqrt(hp.lambda)*hp.alphapenaltyoperator*α])
 "Loss function for model"
 function lossfun(model::ePPRModel,y::Vector,hp::ePPRHyperParams)
-    modelloss = lossfun(y-predict(model))
+    modelloss = lossfun(y-model())
     penaltyloss = 0.5*hp.lambda*sum(norm.([hp.alphapenaltyoperator].*model.alpha,2).^2)
     return modelloss + penaltyloss
 end
@@ -505,6 +550,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::eP
     end
     β = std(Φvs)
     Φvs /=β
+
     si = sortperm(xa)
     phi = Spline1D(xa[si], phi(xa[si]), k=3, bc="extrapolate", s=0.5)
     return β,phi,α,Φvs,trustregionsize
@@ -516,6 +562,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int,debug::ePPRDebugOp
     Φvs = Φ(xa)
     β = std(Φvs)
     Φvs /=β
+
     si = sortperm(xa)
     Φ = Spline1D(xa[si], Φ(xa[si]), k=3, bc="extrapolate", s=0.5)
     return β,Φ,α,Φvs
@@ -637,15 +684,20 @@ function getinitialalpha(x::Matrix,r::Vector,debug::ePPRDebugOptions=ePPRDebugOp
     α.-=mean(α);normalize!(α,2);α
 end
 
-function refitmodelbetas(model::ePPRModel,y::Vector,debug::ePPRDebugOptions=ePPRDebugOptions())
+function refitmodelbetas!(model::ePPRModel,y::Vector,debug::ePPRDebugOptions=ePPRDebugOptions())
     debug("Refit Model βs ...")
-    x = cat(model.phivalues...,dims=2)
-    res = lm(x,y.-model.ymean)
-    β = coef(res)
+    ml = length(model);n=length(y)
+    x = Matrix{Float64}(undef,n,ml)
+    for i in 1:ml
+        x[:,i] = model.phivalues[i]
+    end
+    lmresult = lm(x, y .- model.ymean)
+    β = coef(lmresult)
     debug("Old βs: $(model.beta)")
     debug("New βs: $β")
     model.beta = β
-    return model,residuals(res)
+    model.residuals = residuals(lmresult)
+    return model
 end
 
 """

@@ -3,7 +3,7 @@ module ePPR
 
 import Base.length,Base.push!,Base.deleteat!
 export ePPRDebugOptions,DebugNone,DebugBasic,DebugFull,DebugVisual,
-delaywindowpool,delaywindowpooloperator,delaywindowpoolblankimage,cvpartitionindex!,getinitialalpha,refitmodelbetas!,laplacian2dmatrix,
+delaywindowpool,delaywindowpooloperator,cvpartitionindex!,getinitialalpha,refitmodelbetas!,laplacian2dmatrix,
 ePPRModel,getterm,setterm!,clean!,ePPRHyperParams,ePPRCrossValidation,
 eppr,epprcv,epprhypercv,cvmodel,forwardstepwise,refitmodel!,backwardstepwise,dropleastimportantterm!,dropterm!,lossfun,fitnewterm,newtontrustregion
 
@@ -17,14 +17,13 @@ const DebugFull=2
 const DebugVisual=3
 Base.@kwdef mutable struct ePPRDebugOptions
     level::Int = DebugNone
-    logdir = nothing
     logio = nothing
+    logdir = nothing
 end
-
-function (debug::ePPRDebugOptions)(msg;level::Int=DebugBasic,log="ePPR.log",once=false)
+function (debug::ePPRDebugOptions)(msg;level::Int=DebugBasic,log="Log.txt",once=false)
     if debug.level >= level
-        if debug.logio==nothing
-            if debug.logdir==nothing
+        if isnothing(debug.logio)
+            if isnothing(debug.logdir)
                 io=stdout
             else
                 !isdir(debug.logdir) && mkpath(debug.logdir)
@@ -37,12 +36,11 @@ function (debug::ePPRDebugOptions)(msg;level::Int=DebugBasic,log="ePPR.log",once
         println(io,msg)
         flush(io)
     end
-    once && debug.logio!=nothing && close(debug.logio)
+    once && !isnothing(debug.logio) && close(debug.logio)
 end
-
-function (debug::ePPRDebugOptions)(msg::Plots.Plot;level::Int=DebugBasic,log="ePPRModel")
+function (debug::ePPRDebugOptions)(msg::Plots.Plot;level::Int=DebugVisual,log="Model")
     if debug.level >= level
-        if debug.logdir==nothing
+        if isnothing(debug.logdir)
             display(msg)
         else
             !isdir(debug.logdir) && mkpath(debug.logdir)
@@ -74,15 +72,28 @@ Base.@kwdef mutable struct ePPRModel
     residuals::Vector{Float64} = []
 end
 length(m::ePPRModel)=length(m.beta)
+"Model prediction on training data"
 (m::ePPRModel)() = m.ymean.+dropdims(sum(cat((m.beta.*m.phivalues)...,dims=2),dims=2),dims=2)
-function (m::ePPRModel)(x::Matrix,xpast::Union{Matrix,Nothing})
-    p = fill(m.ymean,size(x,1))
-    for t in 1:length(m)
-        j = m.index[t][1]
-        tx = j>0 ? [xpast[end-(j-1):end,:];x[1:end-j,:]] : x
-        p .+= m.beta[t].*m.phi[t](tx*m.alpha[t])
+"""
+Model prediction on data
+x: matrix with one image per row
+blankimage: row vector of image before x
+xi: x subrange on which prediction is made
+"""
+function (m::ePPRModel)(x::Matrix,blankimage,xi=[])
+    ti=map(i->i.t,m.index);ut=unique(ti);utti=Dict(t=>findall(ti.==t) for t in ut)
+    ŷ = m.ymean
+    for t in ut
+        if isempty(xi)
+            tx = t>0 ? [repeat(blankimage,outer=(t,1));x[1:end-t,:]] : x
+        else
+            tx = t>0 ? [vcat(map(i->i<=0 ? blankimage : x[i:i,:],(xi[1]-t):(xi[1]-1))...);x[xi[1:end-t],:]] : x[xi,:]
+        end
+        for i in utti[t]
+            ŷ = ŷ .+ m.beta[i].*m.phi[i](tx*m.alpha[i])
+        end
     end
-    p
+    return ŷ
 end
 function deleteat!(model::ePPRModel,i::Integer)
     deleteat!(model.beta,i)
@@ -169,10 +180,10 @@ Base.@kwdef mutable struct ePPRHyperParams
     trustregioneta::Float64 = 0.2
     "maximum iterations of trust region"
     trustregionmaxiteration::Int = 1000
+    "dimension of image"
+    imagesize = ()
     "row vector of blank image"
     blankimage = []
-    "dimension of image"
-    imagesize = []
     "drop term index between backward models"
     droptermindex = []
     "ePPR Cross Validation"
@@ -182,52 +193,43 @@ Base.@kwdef mutable struct ePPRHyperParams
     "maximum iterations of hyperparameter search"
     hypermaxiteration = 50
 end
-function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
-    hp=ePPRHyperParams()
-    hp.imagesize = (nrow,ncol)
-    hp.xindex=xindex
-    hp.ndelay=ndelay
-    hp.blankimage = delaywindowpoolblankimage(nrow,ncol,xindex,ndelay,blankcolor)
-    hp.alphapenaltyoperator = delaywindowpooloperator(laplacian2dmatrix(nrow,ncol),xindex,ndelay)
+function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,nft::Vector{Int}=[3,3,3],lambda=30,blankcolor=127)
+    hp = ePPRHyperParams(imagesize=(nrow,ncol),xindex=xindex,ndelay=ndelay,nft=nft,lambda=lambda)
+    hp.blankimage = fill(blankcolor,1,prod(hp.imagesize))
+    hp.alphapenaltyoperator = laplacian2dmatrix(nrow,ncol)
     return hp
 end
 
-function delaywindowpool(x::Matrix,xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5,debug::ePPRDebugOptions=ePPRDebugOptions())
-    vx = isempty(xindex) ? x : x[:,xindex]
-    ndelay<=1 && return vx
-
-    debug("Nonlinear Time Interaction, pool x[i-$(ndelay-1):i] together ...")
-    nc=size(vx,2);dwvx=vx
-    for j in 1:ndelay-1
-        dwvx = [dwvx [fill(blankcolor,j,nc);vx[1:end-j,:]]]
+function delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
+    if isempty(hp.xindex)
+        vx = x
+    else
+        vx = x[:,hp.xindex]
+        hp.blankimage = hp.blankimage[:,hp.xindex]
+        hp.alphapenaltyoperator=hp.alphapenaltyoperator[xindex,xindex]
     end
-    return dwvx
-end
-delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())=delaywindowpool(x,hp.xindex,hp.ndelay,hp.blankimage[1],debug)
+    hp.ndelay<=1 && return vx
 
-function delaywindowpooloperator(spatialoperator::Matrix,xindex::Vector{Int}=Int[],ndelay::Int=1)
-    vso = isempty(xindex) ? spatialoperator : spatialoperator[xindex,xindex]
-    ndelay<=1 && return vso
-
-    nr,nc=size(vso)
-    dwvo = zeros(ndelay*nr,ndelay*nc)
-    for j in 0:ndelay-1
-        dwvo[(1:nr).+j*nr, (1:nc).+j*nc] = vso
+    debug("Nonlinear Time Interaction, pool x[i-$(hp.ndelay-1):i, :] together ...")
+    dwpx=vx;dwpb=hp.blankimage
+    for d in 1:hp.ndelay-1
+        dwpx = [dwpx [repeat(hp.blankimage,outer=(d,1));vx[1:end-d,:]]]
+        dwpb = [dwpb hp.blankimage]
     end
-    return dwvo
+    hp.blankimage=dwpb
+    hp.alphapenaltyoperator = delaywindowpooloperator(hp.alphapenaltyoperator,hp.ndelay)
+    return dwpx
 end
 
-function delaywindowpoolblankimage(nrow::Int,ncol::Int,xindex::Vector{Int}=Int[],ndelay::Int=1,blankcolor=0.5)
-    pn = isempty(xindex) ? nrow*ncol : length(xindex)
-    fill(blankcolor,1,pn*ndelay)
-end
+function delaywindowpooloperator(operator::Matrix,ndelay::Int=1)
+    ndelay<=1 && return operator
 
-function getxpast(maxmemory,xi,x,blankimage)
-    if maxmemory == 0
-        return nothing
+    nr,nc=size(operator)
+    dwpo = zeros(ndelay*nr,ndelay*nc)
+    for d in 0:ndelay-1
+        dwpo[(1:nr).+d*nr, (1:nc).+d*nc] = operator
     end
-    pi = (xi[1]-maxmemory):(xi[1]-1)
-    cat(map(i->i<=0 ? blankimage : x[i:i,:],pi)...,dims=1)
+    return dwpo
 end
 
 """
@@ -259,8 +261,7 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     debug("ePPR Models Cross Validation ...")
     train = hp.cv.trainsets[hp.cv.trainsetindex].train;traintest = hp.cv.trainsets[hp.cv.trainsetindex].traintest;test=hp.cv.tests
     # response and model predication
-    maxmemory = length(hp.nft)-1
-    traintestpredications = map(m->map(i->m(x[i,:],getxpast(maxmemory,i,x,hp.blankimage)),traintest),models)
+    traintestpredications = map(m->map(i->m(x,hp.blankimage,i),traintest),models)
     traintestys = map(i->y[i],traintest)
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
@@ -303,8 +304,8 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     end
     length(model)==0 && return nothing
     model = eppr(model,x[train,:],y[train],hp,debug)
-    hp.cv.modeltraintestcor = map(i->cor(y[i],model(x[i,:],getxpast(maxmemory,i,x,hp.blankimage))),traintest)
-    hp.cv.modeltestcor = map(i->cor(y[i],model(x[i,:],getxpast(maxmemory,i,x,hp.blankimage))),test)
+    hp.cv.modeltraintestcor = map(i->cor(y[i],model(x,hp.blankimage,i)),traintest)
+    hp.cv.modeltestcor = map(i->cor(y[i],model(x,hp.blankimage,i)),test)
     return model
 end
 
@@ -502,26 +503,26 @@ end
 
 lossfun(g::Vector) = 0.5*norm(g,2)^2
 """
-Loss function for term
-f(α) = sum((r-Φ(x*α)).^2) + λ*norm(hp.alphapenaltyoperator*α,2)^2
+Loss function for a model term
+f(α) = sum((r.-Φ(x*α)).^2) + λ*norm(hp.alphapenaltyoperator*α,2)^2
 """
-lossfun(r::Vector,x::Matrix,α::Vector,Φ,hp::ePPRHyperParams) = lossfun([r-Φ(x*α);sqrt(hp.lambda)*hp.alphapenaltyoperator*α])
-"Loss function for model"
+lossfun(r::Vector,x::Matrix,α::Vector,Φ,hp::ePPRHyperParams) = lossfun([r.-Φ(x*α);sqrt(hp.lambda)*hp.alphapenaltyoperator*α])
+"Loss function for model terms"
 function lossfun(model::ePPRModel,y::Vector,hp::ePPRHyperParams)
-    modelloss = lossfun(y-model())
+    modelloss = lossfun(y.-model())
     penaltyloss = 0.5*hp.lambda*sum(norm.([hp.alphapenaltyoperator].*model.alpha,2).^2)
     return modelloss + penaltyloss
 end
 
 (phi::RObject)(x) = rcopy(R"predict($phi, x=$x)$y")
 function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions();convergerate::Float64=hp.forwardconvergerate,trustregionsize::Float64=hp.trustregioninitsize)
-    saturatediteration = 0;phi=nothing;Φvs=nothing;xa=nothing
+    saturatediteration = 0;xa=nothing;phi=nothing;Φvs=nothing
     for i in 1:hp.newtermmaxiteration
         xa = x*α
         phi = R"smooth.spline(y=$r, x=$xa, df=$(hp.phidf), spar=NULL, cv=FALSE)"
         Φvs = phi(xa)
         f(a) = lossfun(r,x,a,phi,hp)
-        gt = r-Φvs;gp = sqrt(hp.lambda)*hp.alphapenaltyoperator*α;g = [gt;gp]
+        gt = r.-Φvs;gp = sqrt(hp.lambda)*hp.alphapenaltyoperator*α;g = [gt;gp]
         debug("New Term $(i)th iteration. TermLoss: $(lossfun(gt)), PenaltyLoss: $(lossfun(gp)).")
         # Loss f(α) before trust region
         lossₒ = lossfun(g)
@@ -532,7 +533,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::eP
         # α and Loss f(α) after trust region
         success,α,lossₙ,trustregionsize = newtontrustregion(f,α,lossₒ,f′,f″,trustregionsize,hp.trustregionmaxsize,hp.trustregioneta,hp.trustregionmaxiteration,debug)
         if !success
-            debug("NewtonTrustRegion failed, New Term use initial α.")
+            debug("NewtonTrustRegion failed, New Term use old α.")
             break
         end
         lossₙ > lossₒ && debug("New Term $(i)th iteration. Loss increased from $(lossₒ) to $(lossₙ).")
@@ -552,8 +553,8 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,debug::eP
     Φvs /=β
 
     si = sortperm(xa)
-    phi = Spline1D(xa[si], phi(xa[si]), k=3, bc="extrapolate", s=0.5)
-    return β,phi,α,Φvs,trustregionsize
+    Φ = Spline1D(xa[si], phi(xa[si]), k=3, bc="extrapolate", s=0.5)
+    return β,Φ,α,Φvs,trustregionsize
 end
 
 function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int,debug::ePPRDebugOptions=ePPRDebugOptions())
@@ -701,7 +702,7 @@ function refitmodelbetas!(model::ePPRModel,y::Vector,debug::ePPRDebugOptions=ePP
 end
 
 """
-2D Laplacian Filtering in Matrix Form
+2D Laplacian Filter in Matrix Form
 """
 function laplacian2dmatrix(nrow::Int,ncol::Int)
     center = [-1 -1 -1;

@@ -4,7 +4,7 @@ module ePPR
 import Base.length,Base.push!,Base.deleteat!
 export ePPRDebugOptions,DebugNone,DebugBasic,DebugFull,DebugVisual,
 delaywindowpool,delaywindowpooloperator,cvpartitionindex!,getinitialalpha,refitmodelbetas!,laplacian2dmatrix,
-ePPRModel,getterm,setterm!,clean!,ePPRHyperParams,ePPRCrossValidation,
+ePPRModel,getterm,setterm!,clean!,ePPRHyperParams,ePPRCrossValidation,delayx,
 eppr,epprcv,epprhypercv,cvmodel,forwardstepwise,refitmodel!,backwardstepwise,dropleastimportantterm!,dropterm!,lossfun,fitnewterm,newtontrustregion
 
 using LinearAlgebra,Statistics,GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
@@ -77,18 +77,14 @@ length(m::ePPRModel)=length(m.beta)
 """
 Model prediction on data
 x: matrix with one image per row
-blankimage: row vector of image before x
+hp: hyper parameters
 xi: x subrange on which prediction is made
 """
-function (m::ePPRModel)(x::Matrix,blankimage,xi=[])
+function (m::ePPRModel)(x::Matrix,hp,xi=[])
     ti=map(i->i.t,m.index);ut=unique(ti);utti=Dict(t=>findall(ti.==t) for t in ut)
     ŷ = m.ymean
     for t in ut
-        if isempty(xi)
-            tx = t>0 ? [repeat(blankimage,outer=(t,1));x[1:end-t,:]] : x
-        else
-            tx = t>0 ? [vcat(map(i->i<=0 ? blankimage : x[i:i,:],(xi[1]-t):(xi[1]-1))...);x[xi[1:end-t],:]] : x[xi,:]
-        end
+        tx = delayx(x,t,hp,xi)
         for i in utti[t]
             ŷ = ŷ .+ m.beta[i].*m.phi[i](tx*m.alpha[i])
         end
@@ -190,6 +186,8 @@ Base.@kwdef mutable struct ePPRHyperParams
     cv::ePPRCrossValidation = ePPRCrossValidation()
     "Valid Image Region"
     xindex::Vector{Int} = Int[]
+    "Index iⱼ where image sequence breaks between x[iⱼ-1,:] and x[iⱼ,:]"
+    xbreak::Vector{Int} = Int[]
     "maximum iterations of hyperparameter search"
     hypermaxiteration = 50
 end
@@ -198,6 +196,21 @@ function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::I
     hp.blankimage = fill(blankcolor,1,prod(hp.imagesize))
     hp.alphapenaltyoperator = laplacian2dmatrix(nrow,ncol)
     return hp
+end
+
+"Image sequence at delay"
+function delayx(x,d,hp,xi=[])
+    if d<=0
+        tx = x
+    else
+        tx = [repeat(hp.blankimage,outer=(d,1));x[1:end-d,:]]
+        if !isempty(hp.xbreak)
+            for bi in hp.xbreak
+                tx[bi-d:bi-1,:]=repeat(hp.blankimage,outer=(d,1))
+            end
+        end
+    end
+    isempty(xi) ? tx : tx[xi,:]
 end
 
 function delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
@@ -211,12 +224,10 @@ function delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=e
     hp.ndelay<=1 && return vx
 
     debug("Nonlinear Time Interaction, pool x[i-$(hp.ndelay-1):i, :] together ...")
-    dwpx=vx;dwpb=hp.blankimage
+    dwpx=vx
     for d in 1:hp.ndelay-1
-        dwpx = [dwpx [repeat(hp.blankimage,outer=(d,1));vx[1:end-d,:]]]
-        dwpb = [dwpb hp.blankimage]
+        dwpx = [dwpx delayx(vx,d,hp)]
     end
-    hp.blankimage=dwpb
     hp.alphapenaltyoperator = delaywindowpooloperator(hp.alphapenaltyoperator,hp.ndelay)
     return dwpx
 end
@@ -250,6 +261,7 @@ function cvpartitionindex!(cv::ePPRCrossValidation,n::Int,debug::ePPRDebugOption
         train = setdiff(1:ntrain,tf*ntrainfold .+ (1:ntrainfold))
         push!(trainsets,(train=train,traintest=traintest))
     end
+    cv.trainsetindex=cv.trainfold
     ntestfold = Int(floor((n-ntrain)/cv.testfold))
     tests = Any[ntrain .+ (1:ntestfold) .+ tf*ntestfold for tf in 0:cv.testfold-1]
     debug("Cross Validation Data Partition: n = $n, ntrain = $ntrain in $(cv.trainfold)-fold, ntrainfold = $ntrainfold in $(cv.traintestfold)-fold, ntest = $(ntestfold*cv.testfold) in $(cv.testfold)-fold")
@@ -261,7 +273,7 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     debug("ePPR Models Cross Validation ...")
     train = hp.cv.trainsets[hp.cv.trainsetindex].train;traintest = hp.cv.trainsets[hp.cv.trainsetindex].traintest;test=hp.cv.tests
     # response and model predication
-    traintestpredications = map(m->map(i->m(x,hp.blankimage,i),traintest),models)
+    traintestpredications = map(m->map(i->m(x,hp,i),traintest),models)
     traintestys = map(i->y[i],traintest)
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
@@ -304,8 +316,8 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     end
     length(model)==0 && return nothing
     model = eppr(model,x[train,:],y[train],hp,debug)
-    hp.cv.modeltraintestcor = map(i->cor(y[i],model(x,hp.blankimage,i)),traintest)
-    hp.cv.modeltestcor = map(i->cor(y[i],model(x,hp.blankimage,i)),test)
+    hp.cv.modeltraintestcor = map(i->cor(y[i],model(x,hp,i)),traintest)
+    hp.cv.modeltestcor = map(i->cor(y[i],model(x,hp,i)),test)
     return model
 end
 
@@ -398,7 +410,7 @@ function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,de
     ym = mean(y);model = ePPRModel(ymean=ym);model.residuals=y.-ym
     if hp.spatialtermfirst
         for t in ut
-            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            tx = delayx(x,t,hp)
             for s in 1:utsn[t]
                 debug("Fit Model (Temporal-$t, Spatial-$s) New Term ...")
                 α = normalize(m.alpha[findfirst(==((t=t,s=uts[t][s])),m.index)], 2)
@@ -411,7 +423,7 @@ function forwardstepwise(m::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,de
         for s in 1:maximum(values(utsn)), t in ut
             s>utsn[t] && continue
             debug("Fit Model (Temporal-$t, Spatial-$s) New Term ...")
-            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            tx = delayx(x,t,hp)
             α = normalize(m.alpha[findfirst(==((t=t,s=uts[t][s])),m.index)], 2)
             β,Φ,α,Φvs = fitnewterm(tx,model.residuals,α,hp.phidf,debug)
             model.residuals .-= β*Φvs
@@ -429,7 +441,7 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
     ym = mean(y);model = ePPRModel(ymean=ym);model.residuals=y.-ym
     if hp.spatialtermfirst
         for t in 0:length(hp.nft)-1
-            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            tx = delayx(x,t,hp)
             for s in 1:hp.nft[t+1]
                 debug("Fit (Temporal-$t, Spatial-$s) New Term ...")
                 α = getinitialalpha(tx,model.residuals,debug)
@@ -442,7 +454,7 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebu
         for s in 1:maximum(hp.nft), t in 0:length(hp.nft)-1
             s>hp.nft[t+1] && continue
             debug("Fit (Temporal-$t, Spatial-$s) New Term ...")
-            tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+            tx = delayx(x,t,hp)
             α = getinitialalpha(tx,model.residuals,debug)
             β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,model.residuals,α,hp,debug)
             model.residuals .-= β*Φvs
@@ -461,7 +473,7 @@ function refitmodel!(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,de
         model.residuals .+= oldβ*oldΦvs
 
         t = index.t;s=index.s
-        tx = t>0 ? [repeat(hp.blankimage,outer=(t,1));x[1:end-t,:]] : x
+        tx = delayx(x,t,hp)
         debug("Refit (Temporal-$t, Spatial-$s) New Term ...")
         β,Φ,α,Φvs,trustregionsize = fitnewterm(tx,model.residuals,oldα,hp,debug,convergerate=hp.refitconvergerate,trustregionsize=oldtrustregionsize)
         setterm!(model,i,β,Φ,α,index,Φvs,trustregionsize)

@@ -151,7 +151,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "number of forward terms for each delay. [3, 2, 1] means 3 spatial terms for delay 0, 2 for delay 1, 1 for delay 2"
     nft::Vector{Int} = [3,3,3]
     "penalization parameter λ"
-    lambda::Float64 = 30
+    lambda::Float64 = 15
     "Φ Spline degree of freedom"
     phidf::Int = 5
     "minimum number of backward terms"
@@ -164,7 +164,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     forwardconvergerate::Float64 = 0.01
     "`(lossₒ-lossₙ)/lossₒ`, refit converge rate threshold to decide a saturated iteration"
     refitconvergerate::Float64 = 0.001
-    "number of consecutive saturated iterations to decide a solution"
+    "number of consecutive saturated iterations to decide a new term"
     nsaturatediteration::Int = 2
     "maximum number of iterations to fit a new term"
     newtermmaxiteration::Int = 100
@@ -190,6 +190,10 @@ Base.@kwdef mutable struct ePPRHyperParams
     xbreak::Vector{Int} = Int[]
     "maximum iterations of hyperparameter search"
     hypermaxiteration = 50
+    "number of consecutive saturated iterations to decide a hyperparameter"
+    nhypersaturatediteration::Int = 2
+    "scale factor for λ search"
+    lambdascale::Float64 = 1.5
 end
 function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,nft::Vector{Int}=[3,3,3],lambda=30,blankcolor=127)
     hp = ePPRHyperParams(imagesize=(nrow,ncol),xindex=xindex,ndelay=ndelay,nft=nft,lambda=lambda)
@@ -324,8 +328,9 @@ end
 function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     n = length(y);n !=size(x,1) && error("Length of x and y does not match!")
     cvpartitionindex!(hp.cv,n,debug)
-    train = hp.cv.trainsets[hp.cv.trainsetindex].train
     px = delaywindowpool(x,hp,debug)
+    debug("Choose $(hp.cv.trainsetindex)th trainset.")
+    train = hp.cv.trainsets[hp.cv.trainsetindex].train
     models = eppr(px[train,:],y[train],hp,debug)
     model = cvmodel(models,px,y,hp,debug)
     debug("Cross Validated ePPR Done.",once=true)
@@ -335,11 +340,11 @@ end
 function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     n = length(y);n !=size(x,1) && error("Length of x and y does not match!")
     cvpartitionindex!(hp.cv,n,debug)
-    train = hp.cv.trainsets[hp.cv.trainsetindex].train
     px = delaywindowpool(x,hp,debug)
+    debug("Choose $(hp.cv.trainsetindex)th trainset.")
+    train = hp.cv.trainsets[hp.cv.trainsetindex].train
 
-    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcors=[];nsaturatediteration=0;maxsaturation=2
-    hp.lambda = 2
+    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcors=[];saturatediteration=0
     for i in 1:hp.hypermaxiteration
         debug("HyperParameter Search: λ = $(hp.lambda) ...")
         models = eppr(px[train,:],y[train],hp,debug)
@@ -348,40 +353,41 @@ function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOpt
         if !isnothing(model)
             push!(hypermodel,model);push!(hypermodels,models);push!(λs,hp.lambda);push!(modelcors,[hp.cv.modeltraintestcor;hp.cv.modeltestcor])
             if length(modelcors)==1
-                hp.lambda *=2
+                hp.lambda *=hp.lambdascale
             else
                 improvep = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:left)
                 if improvep < hp.cv.h1level
-                    nsaturatediteration=0
-                    hp.lambda *= 2.5
+                    saturatediteration=0
+                    hp.lambda *= hp.lambdascale
                 else
-                    impirep = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:right)
-                    if impirep < hp.cv.h1level
-                        hi=length(hypermodel)-1;break
+                    impairp = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:right)
+                    if impairp < hp.cv.h1level
+                        hi=length(modelcors)-1;break
                     else
-                        nsaturatediteration+=1
-                        if nsaturatediteration>=maxsaturation
-                            hi=length(hypermodel);break
+                        saturatediteration+=1
+                        if saturatediteration>=hp.nhypersaturatediteration
+                            hi=length(modelcors);break
                         else
-                            hp.lambda *= 1.5
+                            hp.lambda *= hp.lambdascale
                         end
                     end
                 end
             end
         else
-            hp.lambda *=2
+            hp.lambda *=hp.lambdascale
         end
     end
     debug.level >= DebugVisual && !isempty(modelcors) && debug(plotcor(λs,modelcors,xlabel="λ"),log="λ_Models_Goodness")
     if hi==0
-        if length(hypermodel)>0
+        if length(modelcors)>0
             _,hi=findmax(mean.(modelcors))
         else
+            debug("No valid λ and model.",once=true)
             return nothing,[]
         end
     end
-    debug("HyperParameter Search Done.",once=true)
     hp.lambda = λs[hi]
+    debug("HyperParameter search done with best λ = $(hp.lambda).",once=true)
     return hypermodel[hi],hypermodels[hi]
 end
 

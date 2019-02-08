@@ -118,7 +118,8 @@ function setterm!(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64}
     model.phivalues[i]=Φvs
     model.trustregionsize[i]=trustregionsize
 end
-clean!(model)=model
+clean!(model::Nothing)=missing
+clean!(models::Vector)=clean!.(models)
 function clean!(model::ePPRModel)
     model.phivalues=[]
     model.trustregionsize=[]
@@ -189,7 +190,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "Index iⱼ where image sequence breaks between x[iⱼ-1,:] and x[iⱼ,:]"
     xbreak::Vector{Int} = Int[]
     "maximum iterations of hyperparameter search"
-    hypermaxiteration = 50
+    hypermaxiteration = 25
     "number of consecutive saturated iterations to decide a hyperparameter"
     nhypersaturatediteration::Int = 2
     "scale factor for λ search"
@@ -223,7 +224,7 @@ function delaywindowpool(x::Matrix,hp::ePPRHyperParams,debug::ePPRDebugOptions=e
     else
         vx = x[:,hp.xindex]
         hp.blankimage = hp.blankimage[:,hp.xindex]
-        hp.alphapenaltyoperator=hp.alphapenaltyoperator[xindex,xindex]
+        hp.alphapenaltyoperator=hp.alphapenaltyoperator[hp.xindex,hp.xindex]
     end
     hp.ndelay<=1 && return vx
 
@@ -282,7 +283,7 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
     hp.cv.traintestcors = traintestcors;hp.cv.modeltraintestcor=[];hp.cv.modeltestcor=[]
-    debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Models_Goodness")
+    debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Models_Goodness (λ=$(hp.lambda))")
     # find the model no worse than models with more terms, and better than models with less terms
     mi=0;nmodel=length(models)
     for rm in 1:nmodel
@@ -344,14 +345,27 @@ function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOpt
     debug("Choose $(hp.cv.trainsetindex)th trainset.")
     train = hp.cv.trainsets[hp.cv.trainsetindex].train
 
-    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcors=[];saturatediteration=0
+    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcors=[];saturatediteration=0;chanceiteration=0;nomodeliteration=0
     for i in 1:hp.hypermaxiteration
         debug("HyperParameter Search: λ = $(hp.lambda) ...")
         models = eppr(px[train,:],y[train],hp,debug)
         model = cvmodel(models,px,y,hp,debug)
         debug("Cross Validated ePPR Done.")
         if !isnothing(model)
+            nomodeliteration=0
             push!(hypermodel,model);push!(hypermodels,models);push!(λs,hp.lambda);push!(modelcors,[hp.cv.modeltraintestcor;hp.cv.modeltestcor])
+            chancep = pvalue(SignedRankTest(modelcors[end]),tail=:both)
+            if any(x->isnan(x),modelcors[end]) || (chancep > hp.cv.h0level)
+                chanceiteration+=1
+                if chanceiteration>=hp.nhypersaturatediteration
+                    hi=-1;break
+                else
+                    hp.lambda *= hp.lambdascale
+                end
+                continue
+            else
+                chanceiteration=0
+            end
             if length(modelcors)==1
                 hp.lambda *=hp.lambdascale
             else
@@ -374,16 +388,24 @@ function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOpt
                 end
             end
         else
-            hp.lambda *=hp.lambdascale
+            nomodeliteration+=1
+            if nomodeliteration>=hp.nhypersaturatediteration
+                hi=-1;break
+            else
+                hp.lambda *= hp.lambdascale
+            end
         end
     end
     debug.level >= DebugVisual && !isempty(modelcors) && debug(plotcor(λs,modelcors,xlabel="λ"),log="λ_Models_Goodness")
-    if hi==0
+    if hi<0
+        debug("No predictive λ and model.",once=true)
+        return nothing,nothing
+    elseif hi==0
         if length(modelcors)>0
             _,hi=findmax(mean.(modelcors))
         else
             debug("No valid λ and model.",once=true)
-            return nothing,[]
+            return nothing,nothing
         end
     end
     hp.lambda = λs[hi]
@@ -497,13 +519,13 @@ end
 
 function backwardstepwise(model::ePPRModel,x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOptions=ePPRDebugOptions())
     debug("ePPR Backward Stepwise ...")
-    debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model))")
+    debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model)) (λ=$(hp.lambda))")
     models=[deepcopy(model)];hp.droptermindex=[]
     for i in length(model)-1:-1:hp.mnbt
         model,dropindex = dropleastimportantterm!(model,debug)
         pushfirst!(hp.droptermindex,dropindex)
         model = refitmodel!(model,x,y,hp,debug)
-        debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model))")
+        debug.level >= DebugVisual && debug(plotmodel(model,hp),log="Model_$(length(model)) (λ=$(hp.lambda))")
         pushfirst!(models,deepcopy(model))
     end
     return models

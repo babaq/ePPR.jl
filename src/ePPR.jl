@@ -118,8 +118,7 @@ function setterm!(model::ePPRModel,i::Integer,β::Float64,Φ,α::Vector{Float64}
     model.phivalues[i]=Φvs
     model.trustregionsize[i]=trustregionsize
 end
-clean!(model::Nothing)=missing
-clean!(models::Vector)=clean!.(models)
+clean!(model)=model
 function clean!(model::ePPRModel)
     model.phivalues=[]
     model.trustregionsize=[]
@@ -137,9 +136,9 @@ Base.@kwdef mutable struct ePPRCrossValidation
     trainsetindex::Int = 1
     h0level::Float64 = 0.05
     h1level::Float64 = 0.05
-    traintestcors = []
     modeltraintestcor = []
     modeltestcor = []
+    modelcors = []
 end
 
 """
@@ -282,7 +281,7 @@ function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperPara
     traintestys = map(i->y[i],traintest)
     # correlation between response and predication
     traintestcors = map(mps->cor.(traintestys,mps),traintestpredications)
-    hp.cv.traintestcors = traintestcors;hp.cv.modeltraintestcor=[];hp.cv.modeltestcor=[]
+    hp.cv.modeltraintestcor=[];hp.cv.modeltestcor=[]
     debug.level >= DebugVisual && debug(plotcor(models,traintestcors),log="Models_Goodness (λ=$(hp.lambda))")
     # find the model no worse than models with more terms, and better than models with less terms
     mi=0;nmodel=length(models)
@@ -399,16 +398,16 @@ function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,debug::ePPRDebugOpt
     debug.level >= DebugVisual && !isempty(modelcors) && debug(plotcor(λs,modelcors,xlabel="λ"),log="λ_Models_Goodness")
     if hi<0
         debug("No predictive λ and model.",once=true)
-        return nothing,nothing
+        return nothing,[]
     elseif hi==0
         if length(modelcors)>0
             _,hi=findmax(mean.(modelcors))
         else
             debug("No valid λ and model.",once=true)
-            return nothing,nothing
+            return nothing,[]
         end
     end
-    hp.lambda = λs[hi]
+    hp.lambda = λs[hi];hp.cv.modelcors = modelcors[hi]
     debug("HyperParameter search done with best λ = $(hp.lambda).",once=true)
     return hypermodel[hi],hypermodels[hi]
 end

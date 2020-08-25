@@ -1,6 +1,6 @@
 # ePPR - extended Projection Pursuit Regression
 
-## Documentation
+## Tutorial
 [Jupyter Notebook](./test/eppr.ipynb)
 
 ## References

@@ -1,35 +1,15 @@
-## Documentation: http://docs.travis-ci.com/user/languages/julia/
 language: julia
 os:
+  # - windows
   - linux
-  - osx
+  # - osx
 julia:
-  - 0.6
-  - nightly
+  - 1.5
+
 notifications:
-  email: false
-git:
-  depth: 99999999
+  email: true
 
-## uncomment the following lines to allow failures on nightly julia
-## (tests will run but not make your overall status red)
-#matrix:
-#  allow_failures:
-#  - julia: nightly
-
-## uncomment and modify the following lines to manually install system packages
-#addons:
-#  apt: # apt-get for linux
-#    packages:
-#    - gfortran
-#before_script: # homebrew for mac
-#  - if [ $TRAVIS_OS_NAME = osx ]; then brew install gcc; fi
-
-## uncomment the following lines to override the default test script
-#script:
-#  - julia -e 'Pkg.clone(pwd()); Pkg.build("ePPR"); Pkg.test("ePPR"; coverage=true)'
-after_success:
-  # push coverage results to Coveralls
-  - julia -e 'cd(Pkg.dir("ePPR")); Pkg.add("Coverage"); using Coverage; Coveralls.submit(Coveralls.process_folder())'
-  # push coverage results to Codecov
-  - julia -e 'cd(Pkg.dir("ePPR")); Pkg.add("Coverage"); using Coverage; Codecov.submit(Codecov.process_folder())'
+script:
+  - julia --project -e 'using Pkg; Pkg.build(verbose=true); Pkg.test(coverage=true);
+                        Pkg.add("Coverage"); using Coverage; Codecov.submit(process_folder());
+                        Pkg.add("Documenter"); include("docs/make.jl")'

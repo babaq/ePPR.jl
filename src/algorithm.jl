@@ -1,6 +1,8 @@
 using LinearAlgebra,Statistics,GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
 import Base: length, push!, deleteat!
 
+
+
 "ePPR Log Options"
 Base.@kwdef mutable struct ePPRLog
     debug = false
@@ -635,23 +637,27 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,log::ePPR
         log.debug && i==hp.newtermmaxiteration && log("New Term does not converge in $i iterations.")
     end
     β = std(Φvs)
-    Φvs /=β
 
     si = sortperm(xa)
-    Φ = Spline1D(xa[si], phi(xa[si]), k=3, bc="extrapolate", s=0.5)
-    return β,Φ,α,Φvs,trustregionsize
+    Φ = Spline1D(xa[si], Φvs[si], bc="nearest", s=0.5)
+    # xknots = range(extrema(xa)...,length=21)[2:end-1]
+    # Φ = Spline1D(xa[si], Φvs[si], xknots, bc="nearest")
+
+    return β,Φ,α,Φvs/β,trustregionsize
 end
 
 function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int)
     xa = x*α
-    Φ = R"smooth.spline(y=$r, x=$xa, df=$phidf, spar=NULL, cv=FALSE)"
-    Φvs = Φ(xa)
+    phi = R"smooth.spline(y=$r, x=$xa, df=$phidf, spar=NULL, cv=FALSE)"
+    Φvs = phi(xa)
     β = std(Φvs)
-    Φvs /=β
 
     si = sortperm(xa)
-    Φ = Spline1D(xa[si], Φ(xa[si]), k=3, bc="extrapolate", s=0.5)
-    return β,Φ,α,Φvs
+    Φ = Spline1D(xa[si], Φvs[si], bc="nearest", s=0.5)
+    # xknots = range(extrema(xa)...,length=21)[2:end-1]
+    # Φ = Spline1D(xa[si], Φvs[si], xknots, bc="nearest")
+
+    return β,Φ,α,Φvs/β
 end
 
 """
@@ -839,6 +845,8 @@ function laplacian2dmatrix(nrow::Int,ncol::Int)
     lm[lli[r,c],:]=vec(f)
     return lm
 end
+
+
 
 ## Visualization
 "Plot ePPR Model"

@@ -11,7 +11,6 @@ for n in names(@__MODULE__, all=true)
 end
 
 function __init__()
-    R"library('MASS')"
     pyplot()
 end
 

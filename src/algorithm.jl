@@ -509,6 +509,16 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,log::ePPRLog)
     return model
 end
 
+function ridgeparam(X,y;bias=true)
+    n,p = size(X)
+    β = llsq(X,y;bias)
+    ŷ = X * β
+    σ² = sum((y .- ŷ).^2) / (n - p - bias)
+
+    kLW = (p - 2) * σ² * n/sum(ŷ.^2)
+    return (;kLW)
+end
+
 function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
     log.debug && log("Get Initial α ...")
     # α = rcopy(R"""
@@ -517,10 +527,7 @@ function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
     # coef(lmr)
     # """)
 
-    λ = rcopy(R"""
-    lmr = lm.ridge($r ~ 0 + $x)
-    lmr$kLW
-    """)
+    λ = ridgeparam(x,r,bias=false).kLW
     α = ridge(x,r,λ^2,bias=false)
     α.-=mean(α);normalize!(α,2);α
 end

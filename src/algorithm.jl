@@ -1,4 +1,4 @@
-using LinearAlgebra,Statistics,GLM,Roots,HypothesisTests,RCall,Dierckx,Plots
+using LinearAlgebra,Statistics,MultivariateStats,Roots,HypothesisTests,RCall,Dierckx,Plots
 import Base: length, push!, deleteat!
 
 
@@ -24,7 +24,7 @@ function (log::ePPRLog)(msg;file="ePPRLog.txt",close=false)
     end
     println(io,msg)
     flush(io)
-    close && !isnothing(log.io) && close(log.io)
+    close && !isnothing(log.io) && Base.close(log.io)
 end
 function (log::ePPRLog)(msg::Plots.Plot;file="Model.png")
     if isnothing(log.dir)
@@ -511,12 +511,17 @@ end
 
 function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
     log.debug && log("Get Initial α ...")
-    # RCall lm.ridge with kLW lambda
-    α = rcopy(R"""
+    # α = rcopy(R"""
+    # lmr = lm.ridge($r ~ 0 + $x)
+    # lmr = lm.ridge($r ~ 0 + $x, lambda=lmr$kLW)
+    # coef(lmr)
+    # """)
+
+    λ = rcopy(R"""
     lmr = lm.ridge($r ~ 0 + $x)
-    lmr = lm.ridge($r ~ 0 + $x, lambda=lmr$kLW)
-    coefficients(lmr)
+    lmr$kLW
     """)
+    α = ridge(x,r,λ^2,bias=false)
     α.-=mean(α);normalize!(α,2);α
 end
 
@@ -527,14 +532,13 @@ function refitmodelbeta!(model::ePPRModel,y::Vector,log::ePPRLog)
     for i in 1:ml
         x[:,i] = model.phivalues[i]
     end
-    lmresult = lm(x, y .- model.ymean)
-    β = coef(lmresult)
+    β = llsq(x, y .- model.ymean, bias=false)
     if log.debug
         log("Old βs: $(model.beta)")
         log("New βs: $β")
     end
     model.beta = β
-    model.residuals = residuals(lmresult)
+    model.residuals = y .- x*β
     return model
 end
 

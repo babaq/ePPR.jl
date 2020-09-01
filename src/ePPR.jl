@@ -10,8 +10,4 @@ for n in names(@__MODULE__, all=true)
     end
 end
 
-function __init__()
-    pyplot()
-end
-
 end

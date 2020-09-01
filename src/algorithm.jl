@@ -511,7 +511,7 @@ end
 
 function ridgeparam(X,y;bias=true)
     n,p = size(X)
-    β = llsq(X,y;bias)
+    β = ridge(X,y,0.00001;bias)
     ŷ = X * β
     σ² = sum((y .- ŷ).^2) / (n - p - bias)
 
@@ -526,7 +526,6 @@ function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
     # lmr = lm.ridge($r ~ 0 + $x, lambda=lmr$kLW)
     # coef(lmr)
     # """)
-
     λ = ridgeparam(x,r,bias=false).kLW
     α = ridge(x,r,λ^2,bias=false)
     α.-=mean(α);normalize!(α,2);α
@@ -861,15 +860,15 @@ end
 
 ## Visualization
 "Plot ePPR Model"
-function plotmodel(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim=true,xlim=200,size=(650,850))
-    plot(plotalpha(model,hp;color,linkclim),plotphi(model,hp;xlim),layout=(2,1),size=size,link=:none)
+function plotmodel(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim=true,xlim=200,size=(650,850),colorbar=:none)
+    plot(plotalpha(model,hp;color,linkclim,colorbar),plotphi(model,hp;xlim),layout=(2,1),size=size,link=:none)
 end
 
 "Plot ePPR α for each term"
-function plotalpha(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim=true)
+function plotalpha(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim=true,colorbar=:none)
     ti = map(i->i.t+1,model.index);si = map(i->i.s,model.index);tmin,tmax=extrema(ti);smax=maximum(si)
     utsmax=Dict(t=>maximum(si[ti.==t]) for t in unique(ti));inpx=prod(hp.imagesize);xnpx=length(hp.xindex);αlim=0
-    p = plot(layout=(tmax,smax),yflip=true,framestyle=:none)
+    p = plot(layout=(tmax,smax),yflip=true,framestyle=:none,margin=-1Plots.mm)
     for i in 1:length(model)
         t=ti[i];s=si[i];iα=model.alpha[i]
         α = mapfoldl(d->begin
@@ -884,7 +883,7 @@ function plotalpha(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim
         if linkclim
             αlim=max(αlim,maximum(abs.(α)))
         end
-        colorbar = linkclim ? ( (t==tmin && s==utsmax[t]) ? :right : :none ) : :right
+        # colorbar = linkclim ? ( (t==tmin && s==utsmax[t]) ? :right : :none ) : :right
         heatmap!(p[t,s],α,color=color,ratio=:equal,colorbar=colorbar)
     end
     for t in 1:tmax
@@ -897,7 +896,7 @@ end
 "Plot ePPR Φ function for each term"
 function plotphi(model::ePPRModel,hp::ePPRHyperParams;xlim=200)
     ti = map(i->i.t+1,model.index);si = map(i->i.s,model.index);tmax=maximum(ti);smax=maximum(si)
-    p = plot(layout=(tmax,smax),leg=false,grid=false,framestyle=:none,xtick=[-xlim,0,xlim])
+    p = plot(layout=(tmax,smax),leg=false,grid=false,framestyle=:none,xtick=[-xlim,0,xlim],margin=-1Plots.mm,titlefontsize=10)
     for i in 1:length(model)
         t=ti[i];s=si[i]
         vline!(p[t,s],[0],linewidth=0.5,color=:grey80);hline!(p[t,s],[0],linewidth=0.5,color=:grey80)

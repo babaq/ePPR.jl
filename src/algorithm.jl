@@ -509,25 +509,67 @@ function forwardstepwise(x::Matrix,y::Vector,hp::ePPRHyperParams,log::ePPRLog)
     return model
 end
 
-function ridgeparam(X,y;bias=true)
-    n,p = size(X)
-    β = ridge(X,y,0.00001;bias)
-    ŷ = X * β
-    σ² = sum((y .- ŷ).^2) / (n - p - bias)
+"""
+Estimate ridge parameter
 
-    kLW = (p - 2) * σ² * n/sum(ŷ.^2)
-    return (;kLW)
+1. X: design matrix without intercept
+2. y: response vector
+
+return:
+
+- LW: L-W estimate of the ridge parameter for unscaled `X`
+"""
+function ridgeparam(X,y)
+    n,p = size(X)
+    β = llsq(X,y,bias=false)
+    ŷ = X * β
+    σ² = sum((y .- ŷ).^2) / (n - p)
+
+    LW = (p - 2) * σ² * n/sum(ŷ.^2)
+    Xscale² = vec(sum((X.^2)./n,dims=1))
+    LW *= Xscale²
+    return (;LW)
+end
+
+"""
+A simplified version of `lm.ridge` in R package `MASS`.
+
+1. X: design matrix without intercept
+2. y: response vector
+3. λ: ridge parameter for internal scaled `X`
+
+return:
+
+- coef: coefficients for unscaled `X`
+- HKB: HKB estimate of the ridge parameter for internal scaled `X`
+- LW: L-W estimate of the ridge parameter for internal scaled `X`
+"""
+function ridge_R(X,y,λ=0.0)
+    n,p = size(X)
+    Xscale = sqrt.(sum((X.^2)./n,dims=1))
+    _X = X./Xscale
+    _Xsvd = svd(_X)
+    rhs = _Xsvd.U'*y
+    lscoef = _Xsvd.V * (rhs./_Xsvd.S)
+    lsfit = _X*lscoef
+    σ² = sum((y.-lsfit).^2)/(n - p)
+    HKB = (p - 2) * σ²/sum(lscoef.^2)
+    LW = (p - 2) * σ² * n/sum(lsfit.^2)
+    div = _Xsvd.S.^2 .+ λ
+    a = (_Xsvd.S .* rhs)./div
+    _coef = _Xsvd.V * a
+    coef = vec(_coef./Xscale')
+    return (;coef,LW,HKB)
 end
 
 function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
     log.debug && log("Get Initial α ...")
-    # α = rcopy(R"""
-    # lmr = lm.ridge($r ~ 0 + $x)
-    # lmr = lm.ridge($r ~ 0 + $x, lambda=lmr$kLW)
-    # coef(lmr)
-    # """)
-    λ = ridgeparam(x,r,bias=false).kLW
-    α = ridge(x,r,λ^2,bias=false)
+
+    λ = ridgeparam(x,r).LW
+    α = ridge(x,r,λ,bias=false)
+
+    # λ = ridge_R(x,r).LW
+    # α = ridge_R(x,r,λ).coef
     α.-=mean(α);normalize!(α,2);α
 end
 
@@ -649,7 +691,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,log::ePPR
     β = std(Φvs)
 
     si = sortperm(xa)
-    Φ = Spline1D(xa[si], Φvs[si], bc="nearest", s=0.5)
+    Φ = Spline1D(xa[si], Φvs[si], bc="extrapolate", s=0.5)
     # xknots = range(extrema(xa)...,length=21)[2:end-1]
     # Φ = Spline1D(xa[si], Φvs[si], xknots, bc="nearest")
 
@@ -663,7 +705,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int)
     β = std(Φvs)
 
     si = sortperm(xa)
-    Φ = Spline1D(xa[si], Φvs[si], bc="nearest", s=0.5)
+    Φ = Spline1D(xa[si], Φvs[si], bc="extrapolate", s=0.5)
     # xknots = range(extrema(xa)...,length=21)[2:end-1]
     # Φ = Spline1D(xa[si], Φvs[si], xknots, bc="nearest")
 
@@ -859,16 +901,18 @@ end
 
 
 ## Visualization
-"Plot ePPR Model"
-function plotmodel(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim=true,xlim=200,size=(650,850),colorbar=:none)
-    plot(plotalpha(model,hp;color,linkclim,colorbar),plotphi(model,hp;xlim),layout=(2,1),size=size,link=:none)
+"Plot ePPR model"
+function plotmodel(model::ePPRModel,hp::ePPRHyperParams;ti = map(i->i.t+1,model.index),si = map(i->i.s,model.index),tmax=maximum(ti),smax=maximum(si),
+                   color=:coolwarm,linkclim=true,xlim=200,colorbar=:none,width=200,height=200)
+    plot(plotalpha(model,hp;ti,si,tmax,smax,color,linkclim,colorbar,width,height),plotphi(model,hp;ti,si,tmax,smax,xlim,width,height),
+    layout=grid(2,1,heights=[hp.ndelay,1]/(hp.ndelay+1)),left_margin=4Plots.mm,size=(smax*width,tmax*height+tmax*hp.ndelay*height),link=:none)
 end
 
 "Plot ePPR α for each term"
-function plotalpha(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim=true,colorbar=:none)
-    ti = map(i->i.t+1,model.index);si = map(i->i.s,model.index);tmin,tmax=extrema(ti);smax=maximum(si)
+function plotalpha(model::ePPRModel,hp::ePPRHyperParams;ti = map(i->i.t+1,model.index),si = map(i->i.s,model.index),tmax=maximum(ti),smax=maximum(si),
+                   color=:coolwarm,linkclim=true,colorbar=:none,width=200,height=200)
     utsmax=Dict(t=>maximum(si[ti.==t]) for t in unique(ti));inpx=prod(hp.imagesize);xnpx=length(hp.xindex);αlim=0
-    p = plot(layout=(tmax,smax),yflip=true,framestyle=:none,margin=-1Plots.mm)
+    p = plot(layout=(tmax,smax),size=(smax*width,tmax*hp.ndelay*height),yflip=true,framestyle=:none,margin=-1Plots.mm)
     for i in 1:length(model)
         t=ti[i];s=si[i];iα=model.alpha[i]
         α = mapfoldl(d->begin
@@ -883,7 +927,6 @@ function plotalpha(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim
         if linkclim
             αlim=max(αlim,maximum(abs.(α)))
         end
-        # colorbar = linkclim ? ( (t==tmin && s==utsmax[t]) ? :right : :none ) : :right
         heatmap!(p[t,s],α,color=color,ratio=:equal,colorbar=colorbar)
     end
     for t in 1:tmax
@@ -894,13 +937,13 @@ function plotalpha(model::ePPRModel,hp::ePPRHyperParams;color=:coolwarm,linkclim
 end
 
 "Plot ePPR Φ function for each term"
-function plotphi(model::ePPRModel,hp::ePPRHyperParams;xlim=200)
-    ti = map(i->i.t+1,model.index);si = map(i->i.s,model.index);tmax=maximum(ti);smax=maximum(si)
-    p = plot(layout=(tmax,smax),leg=false,grid=false,framestyle=:none,xtick=[-xlim,0,xlim],margin=-1Plots.mm,titlefontsize=10)
+function plotphi(model::ePPRModel,hp::ePPRHyperParams;ti = map(i->i.t+1,model.index),si = map(i->i.s,model.index),tmax=maximum(ti),smax=maximum(si),
+                 xlim=200,width=200,height=200)
+    p = plot(layout=(tmax,smax),size=(smax*width,tmax*height),leg=false,grid=false,framestyle=:none,xtick=[-xlim,0,xlim],margin=-1Plots.mm,titlefontsize=10)
     for i in 1:length(model)
         t=ti[i];s=si[i]
         vline!(p[t,s],[0],linewidth=0.5,color=:grey80);hline!(p[t,s],[0],linewidth=0.5,color=:grey80)
-        plot!(p[t,s],x->model.phi[i](x),-xlim,xlim,color=:deepskyblue,linewidth=2,link=:all,framestyle=:axes,title="β=$(round(model.beta[i],digits=3))")
+        plot!(p[t,s],x->model.phi[i](x),-xlim,xlim,color=:dodgerblue,linewidth=3,link=:all,framestyle=:axes,title="β=$(round(model.beta[i],digits=3))")
         if t < tmax
             xaxis!(p[t,s],xformatter=_->"")
         end
@@ -914,7 +957,7 @@ function plotphi(model::ePPRModel,hp::ePPRHyperParams;xlim=200)
     p
 end
 
-"Plot Correlation between response and ePPR prediction"
+"Plot correlation between Response and ePPR prediction"
 plotcor(models::Vector{ePPRModel},mcors)=plotcor(length.(models),mcors,xlabel="Number of Terms")
 function plotcor(ms,mcors;xlabel="Models")
     scatter(ms,hcat(mcors...)',ylabel="Pearson Correlation",xlabel=xlabel,leg=false,xtick=ms)

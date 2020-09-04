@@ -7,14 +7,14 @@ simdata=load(joinpath(@__DIR__,"simdata.jld2"));x=simdata["x"];y=simdata["y"];im
 logdir = joinpath(@__DIR__,"log")
 
 # ePPR with Linear Time Interaction
-hp = ePPRHyperParams(imagesize...,nft=[3,3,3],blankcolor=mean(x))
+hp = ePPRHyperParams(imagesize...,nft=[3,3,3])
 log = ePPRLog(debug=true,plot=true)
 model,models = epprcv(x,y,hp,log)
 plotmodel(model,hp)
 
 # ePPR with Non-Linear Time Interaction
-hp=ePPRHyperParams(imagesize...,ndelay=3,lambda=20,nft=[6],blankcolor=mean(x))
-log = ePPRLog(debug=true,plot=true,dir=logdir)
+hp=ePPRHyperParams(imagesize...,ndelay=3,lambda=15,nft=[6])
+log = ePPRLog(debug=true,plot=true,dir=nothing)
 model,models = epprcv(x,y,hp,log)
 plotmodel(model,hp)
 
@@ -39,3 +39,8 @@ plotmodel(model,hp)
 ## Benchmark
 hp = ePPRHyperParams(imagesize...)
 @btime model,models = epprcv($x,$y1,$hp) samples=1
+
+
+plotalpha(model,hp)
+plotphi(model,hp)
+plotmodel(model,hp)

@@ -153,7 +153,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "number of consecutive saturated iterations to decide a new term"
     nsaturatediteration::Int = 2
     "maximum number of iterations to fit a new term"
-    newtermmaxiteration::Int = 100
+    newtermmaxiteration::Int = 50
     "initial size of trust region"
     trustregioninitsize::Float64 = 1
     "maximum size of trust region"
@@ -161,7 +161,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "η of trust region"
     trustregioneta::Float64 = 0.2
     "maximum iterations of trust region"
-    trustregionmaxiteration::Int = 1000
+    trustregionmaxiteration::Int = 50
     "dimension of image"
     imagesize = ()
     "row vector of blank image"
@@ -571,6 +571,7 @@ function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
         α = ridge(x,r,λ,bias=false)
     catch
         # Slower SVD decomposition
+        log.debug && log("Design Matrix not positive definite, switch to SVD method ...")
         λ = ridge_R(x,r).LW
         α = ridge_R(x,r,λ).coef
     end

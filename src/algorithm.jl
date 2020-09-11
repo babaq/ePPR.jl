@@ -113,14 +113,14 @@ Base.@kwdef mutable struct ePPRCrossValidation
     trainsets = []
     "N-fold of testing samples for testing model"
     testfold::Int = 8
-    "test fold of testing samples"
+    "`testfold` of testing samples"
     tests = []
     "which trainset for training"
     trainsetindex::Int = 1
     "significent level to accept null hypothesis that current model is no better than reference model"
-    h0level::Float64 = 0.05
+    h0level::Float64 = 0.01
     "significent level to accept alternative hypothesis that current model is better than reference model"
-    h1level::Float64 = 0.05
+    h1level::Float64 = 0.01
     "Correlation between response and model prediction on testsets of current trainset"
     modeltraintestcor = []
     "Correlation between response and model prediction on testsets"
@@ -564,12 +564,16 @@ end
 
 function getinitialalpha(x::Matrix,r::Vector,log::ePPRLog)
     log.debug && log("Get Initial α ...")
-
-    λ = ridgeparam(x,r).LW
-    α = ridge(x,r,λ,bias=false)
-
-    # λ = ridge_R(x,r).LW
-    # α = ridge_R(x,r,λ).coef
+    α = nothing
+    try
+        # Faster Cholesky decomposition requires x positive definite
+        λ = ridgeparam(x,r).LW
+        α = ridge(x,r,λ,bias=false)
+    catch
+        # Slower SVD decomposition
+        λ = ridge_R(x,r).LW
+        α = ridge_R(x,r,λ).coef
+    end
     α.-=mean(α);normalize!(α,2);α
 end
 
@@ -691,7 +695,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,hp::ePPRHyperParams,log::ePPR
     β = std(Φvs)
 
     si = sortperm(xa)
-    Φ = Spline1D(xa[si], Φvs[si], bc="extrapolate", s=0.5)
+    Φ = Spline1D(xa[si], Φvs[si], bc="nearest", s=0.5)
     # xknots = range(extrema(xa)...,length=21)[2:end-1]
     # Φ = Spline1D(xa[si], Φvs[si], xknots, bc="nearest")
 
@@ -705,7 +709,7 @@ function fitnewterm(x::Matrix,r::Vector,α::Vector,phidf::Int)
     β = std(Φvs)
 
     si = sortperm(xa)
-    Φ = Spline1D(xa[si], Φvs[si], bc="extrapolate", s=0.5)
+    Φ = Spline1D(xa[si], Φvs[si], bc="nearest", s=0.5)
     # xknots = range(extrema(xa)...,length=21)[2:end-1]
     # Φ = Spline1D(xa[si], Φvs[si], xknots, bc="nearest")
 

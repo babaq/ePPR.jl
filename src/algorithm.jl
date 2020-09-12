@@ -104,15 +104,15 @@ end
 "Cross Validation Parameters for ePPR"
 Base.@kwdef mutable struct ePPRCrossValidation
     "Percent of samples for training"
-    trainpercent::Float64 = 0.88
+    trainpercent::Float64 = 0.9
     "N-fold of training samples"
     trainfold::Int = 5
     "N-fold of one `trainfold` samples for testing training"
-    traintestfold::Int = 8
+    traintestfold::Int = 15
     "each combination of train and test fold"
     trainsets = []
     "N-fold of testing samples for testing model"
-    testfold::Int = 8
+    testfold::Int = 15
     "`testfold` of testing samples"
     tests = []
     "which trainset for training"

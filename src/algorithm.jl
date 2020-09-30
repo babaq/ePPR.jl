@@ -1,8 +1,6 @@
 using LinearAlgebra,Statistics,MultivariateStats,Roots,HypothesisTests,RCall,Dierckx,Plots
 import Base: length, push!, deleteat!
 
-
-
 "ePPR Log Options"
 Base.@kwdef mutable struct ePPRLog
     debug = false
@@ -103,17 +101,17 @@ end
 
 "Cross Validation Parameters for ePPR"
 Base.@kwdef mutable struct ePPRCrossValidation
-    "Percent of samples for training"
+    "Percentage of sample for training"
     trainpercent::Float64 = 0.9
-    "N-fold of training samples"
+    "N-Fold of training sample"
     trainfold::Int = 5
-    "N-fold of one `trainfold` samples for testing training"
+    "N-Fold of one `trainfold` sample for testing training"
     traintestfold::Int = 15
-    "each combination of train and test fold"
+    "each combination of train and traintest fold"
     trainsets = []
-    "N-fold of testing samples for testing model"
+    "N-Fold of testing sample for testing model"
     testfold::Int = 15
-    "`testfold` of testing samples"
+    "`testfold` of testing sample"
     tests = []
     "which trainset for training"
     trainsetindex::Int = 1
@@ -126,7 +124,7 @@ Base.@kwdef mutable struct ePPRCrossValidation
     "Correlation between response and model prediction on testsets"
     modeltestcor = []
     "Correlation between response and model prediction"
-    modelcors = []
+    modelcor = []
 end
 
 "Hyper Parameters for ePPR"
@@ -137,7 +135,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "number of forward terms for each delay. [3, 2, 1] means 3 spatial terms for delay 0, 2 for delay 1, 1 for delay 2"
     nft::Vector{Int} = [3,3,3]
     "penalization parameter λ"
-    lambda::Float64 = 15
+    lambda::Float64 = 8
     "Φ Spline degree of freedom"
     phidf::Int = 5
     "minimum number of backward terms"
@@ -157,7 +155,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "initial size of trust region"
     trustregioninitsize::Float64 = 1
     "maximum size of trust region"
-    trustregionmaxsize::Float64 = 1000
+    trustregionmaxsize::Float64 = 100
     "η of trust region"
     trustregioneta::Float64 = 0.2
     "maximum iterations of trust region"
@@ -175,15 +173,19 @@ Base.@kwdef mutable struct ePPRHyperParams
     "Index iⱼ where image sequence breaks between x[iⱼ-1,:] and x[iⱼ,:]"
     xbreak::Vector{Int} = Int[]
     "maximum iterations of hyperparameter search"
-    hypermaxiteration = 25
-    "number of consecutive saturated iterations to decide a hyperparameter"
+    hypermaxiteration::Int = 15
+    "number of consecutive no model iterations to stop hyperparameter search"
+    nhypernomodeliteration::Int = 3
+    "number of consecutive chance iterations to stop hyperparameter search"
+    nhyperchanceiteration::Int = 3
+    "number of consecutive saturated iterations to stop hyperparameter search"
     nhypersaturatediteration::Int = 2
     "scale factor for λ search"
-    lambdascale::Float64 = 1.5
+    lambdascale::Float64 = 0.5
 end
-function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,nft::Vector{Int}=[3,3,3],lambda=30,blankcolor=127)
-    hp = ePPRHyperParams(imagesize=(nrow,ncol),xindex=xindex,ndelay=ndelay,nft=nft,lambda=lambda)
-    hp.blankimage = fill(blankcolor,1,prod(hp.imagesize))
+function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,nft::Vector{Int}=[3,3,3],lambda=32,lambdascale=0.5,blankcolor=127)
+    hp = ePPRHyperParams(;imagesize=(nrow,ncol),xindex,ndelay,nft,lambda,lambdascale)
+    hp.blankimage = fill(blankcolor,1,nrow*ncol)
     hp.alphapenaltyoperator = laplacian2dmatrix(nrow,ncol)
     return hp
 end
@@ -282,6 +284,7 @@ function cvpartition!(cv::ePPRCrossValidation,n::Int,log::ePPRLog)
     return cv
 end
 
+"Choose best model among models by cross validation"
 function cvmodel(models::Vector{ePPRModel},x::Matrix,y::Vector,hp::ePPRHyperParams,log::ePPRLog)
     log.debug && log("ePPR Models Cross Validation ...")
     train = hp.cv.trainsets[hp.cv.trainsetindex].train;traintest = hp.cv.trainsets[hp.cv.trainsetindex].traintest;test=hp.cv.tests
@@ -347,7 +350,7 @@ function epprcv(x::Matrix,y::Vector,hp::ePPRHyperParams,log::ePPRLog=ePPRLog())
     return model,models
 end
 
-"extended Projection Pursuit Regression with cross validation and hyper parameters search"
+"extended Projection Pursuit Regression with cross validation and hyper parameter search"
 function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,log::ePPRLog=ePPRLog())
     n = length(y);n !=size(x,1) && error("Length of x and y does not match!")
     cvpartition!(hp.cv,n,log)
@@ -355,71 +358,73 @@ function epprhypercv(x::Matrix,y::Vector,hp::ePPRHyperParams,log::ePPRLog=ePPRLo
     log.debug && log("Choose $(hp.cv.trainsetindex)th trainset.")
     train = hp.cv.trainsets[hp.cv.trainsetindex].train
 
-    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcors=[];saturatediteration=0;chanceiteration=0;nomodeliteration=0
+    hi=0;hypermodel=[];hypermodels=[];λs=[];modelcor=[];saturatediteration=0;chanceiteration=0;nomodeliteration=0
     for i in 1:hp.hypermaxiteration
         log.debug && log("HyperParameter Search: λ = $(hp.lambda) ...")
         models = eppr(px[train,:],y[train],hp,log)
         model = cvmodel(models,px,y,hp,log)
-        log.debug && log("Cross Validated ePPR Done.")
-        if !isnothing(model)
+        if isnothing(model)
+            nomodeliteration+=1
+            if nomodeliteration>=hp.nhypernomodeliteration
+                hi=-2;break
+            else
+                hp.lambda *= hp.lambdascale
+            end
+        else
             nomodeliteration=0
-            push!(hypermodel,model);push!(hypermodels,models);push!(λs,hp.lambda);push!(modelcors,[hp.cv.modeltraintestcor;hp.cv.modeltestcor])
-            chancep = pvalue(SignedRankTest(modelcors[end]),tail=:both)
-            if any(x->isnan(x),modelcors[end]) || (chancep > hp.cv.h0level)
+            push!(hypermodel,model);push!(hypermodels,models);push!(λs,hp.lambda);push!(modelcor,[hp.cv.modeltraintestcor;hp.cv.modeltestcor])
+            chancep = pvalue(SignedRankTest(modelcor[end]),tail=:both)
+            if chancep > hp.cv.h0level
                 chanceiteration+=1
-                if chanceiteration>=hp.nhypersaturatediteration
+                if chanceiteration>=hp.nhyperchanceiteration
                     hi=-1;break
                 else
-                    hp.lambda *= hp.lambdascale
+                    hp.lambda *= hp.lambdascale;continue
                 end
-                continue
             else
                 chanceiteration=0
             end
-            if length(modelcors)==1
+
+            if length(modelcor)==1
                 hp.lambda *=hp.lambdascale
             else
-                improvep = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:left)
+                improvep = pvalue(SignedRankTest(modelcor[end],modelcor[end-1]),tail=:right)
                 if improvep < hp.cv.h1level
                     saturatediteration=0
                     hp.lambda *= hp.lambdascale
                 else
-                    impairp = pvalue(SignedRankTest(modelcors[end-1],modelcors[end]),tail=:right)
+                    impairp = pvalue(SignedRankTest(modelcor[end],modelcor[end-1]),tail=:left)
                     if impairp < hp.cv.h1level
-                        hi=length(modelcors)-1;break
+                        hi=length(modelcor)-1;break
                     else
                         saturatediteration+=1
                         if saturatediteration>=hp.nhypersaturatediteration
-                            hi=length(modelcors);break
+                            hi = hp.lambdascale > 1 ? length(modelcor) : length(modelcor)-hp.nhypersaturatediteration;break
                         else
                             hp.lambda *= hp.lambdascale
                         end
                     end
                 end
             end
-        else
-            nomodeliteration+=1
-            if nomodeliteration>=hp.nhypersaturatediteration
-                hi=-1;break
-            else
-                hp.lambda *= hp.lambdascale
-            end
         end
     end
-    log.plot && !isempty(modelcors) && log(plotcor(λs,modelcors,xlabel="λ"),file="λ_Models_Goodness.png")
-    if hi<0
+    log.plot && !isempty(modelcor) && log(plotcor(λs,modelcor,xlabel="λ"),file="λ_Model_Goodness.png")
+    if hi==-2
+        log.debug && log("No valid λ and model.",close=true)
+        return nothing,[]
+    elseif hi==-1
         log.debug && log("No predictive λ and model.",close=true)
         return nothing,[]
     elseif hi==0
-        if length(modelcors)>0
-            _,hi=findmax(mean.(modelcors))
-        else
+        if isempty(modelcor)
             log.debug && log("No valid λ and model.",close=true)
             return nothing,[]
+        else
+            hi=argmax(median.(modelcor))
         end
     end
-    hp.lambda = λs[hi];hp.cv.modelcors = modelcors[hi]
-    log.debug && log("HyperParameter search done with best λ = $(hp.lambda).",close=true)
+    log.debug && log("HyperParameter search done with best λ = $(λs[hi]).",close=true)
+    hp.lambda = λs[hi];hp.cv.modelcor = modelcor[hi]
     return hypermodel[hi],hypermodels[hi]
 end
 

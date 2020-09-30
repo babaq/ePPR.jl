@@ -13,9 +13,15 @@ model,models = epprcv(x,y,hp,log)
 plotmodel(model,hp)
 
 # ePPR with Non-Linear Time Interaction
-hp=ePPRHyperParams(imagesize...,ndelay=3,lambda=15,nft=[6])
-log = ePPRLog(debug=true,plot=true,dir=logdir)
+hp = ePPRHyperParams(imagesize...,ndelay=3,lambda=15,nft=[6])
+log = ePPRLog(debug=true,plot=true)
 model,models = epprcv(x,y,hp,log)
+plotmodel(model,hp)
+
+## ePPR with Hyper Parameter Search
+hp = ePPRHyperParams(imagesize...,lambda=64,lambdascale=0.5)
+log = ePPRLog(debug=true,plot=true,dir=logdir)
+model,models = epprhypercv(x,y,hp,log)
 plotmodel(model,hp)
 
 ## Data Recorded from an Anesthetized Cat
@@ -25,13 +31,13 @@ plotmodel(model,hp)
 data=load(joinpath(@__DIR__,"data.jld2"));x=data["x"];y1=data["y1"];y2=data["y2"];imagesize=data["imagesize"]
 
 # ePPR with Linear Time Interaction
-hp=ePPRHyperParams(imagesize...,lambda=10,blankcolor=mean(x))
+hp = ePPRHyperParams(imagesize...,lambda=15,blankcolor=mean(x))
 log = ePPRLog(debug=true,plot=true)
 model,models = epprcv(x,y1,hp,log)
 plotmodel(model,hp)
 
 # ePPR with Non-Linear Time Interaction
-hp=ePPRHyperParams(imagesize...,ndelay=3,lambda=10,nft=[6],blankcolor=mean(x))
+hp = ePPRHyperParams(imagesize...,ndelay=3,lambda=15,nft=[6],blankcolor=mean(x))
 log = ePPRLog(debug=true,plot=true)
 model,models = epprcv(x,y2,hp,log)
 plotmodel(model,hp)

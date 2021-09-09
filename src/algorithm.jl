@@ -183,7 +183,7 @@ Base.@kwdef mutable struct ePPRHyperParams
     "scale factor for λ search"
     lambdascale::Float64 = 0.5
 end
-function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,nft::Vector{Int}=[3,3,3],lambda=32,lambdascale=0.5,blankcolor=127)
+function ePPRHyperParams(nrow::Int,ncol::Int;xindex::Vector{Int}=Int[],ndelay::Int=1,nft::Vector{Int}=[3,3,3],lambda::Real=32,lambdascale::Real=0.5,blankcolor::Real=127)
     hp = ePPRHyperParams(;imagesize=(nrow,ncol),xindex,ndelay,nft,lambda,lambdascale)
     hp.blankimage = fill(blankcolor,1,nrow*ncol)
     hp.alphapenaltyoperator = laplacian2dmatrix(nrow,ncol)
